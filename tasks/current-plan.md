@@ -2,16 +2,23 @@
 
 **Fork**: github.com/droptheoars/FineTune (upstream: ronitsingh10/FineTune, GPL-3.0)
 **Local**: ~/Code/Personal/FineTune
-**Status**: Phase 1 BUILT (2026-08-25). All 9 tasks committed, full suite green, adversarial RT
-review done and its Critical fixed. PUSHED to origin/feat/au-plugin-hosting (a69c725).
-Awaiting Erik's manual listening pass: tasks/MANUAL-TEST-CHECKLIST.md · build at
-~/Desktop/FineTune-AU.app. PR not opened (permission-blocked) — one-click link and body in
-tasks/PR-BODY.md.
+**Status**: Phase 1 WORKING (Erik-verified 2026-08-25: launch clean, RC-20 loads and colours
+Spotify after the c1b331f entitlement fix). Branch origin/feat/au-plugin-hosting at c1b331f.
+PR not opened yet — one-click link + body in tasks/PR-BODY.md. Full listening checklist
+(tasks/MANUAL-TEST-CHECKLIST.md) only partially run; device-switch test (test 5) still
+unheard by human ears. Next: Phase 2 spec session (see tasks/NEXT-SESSION-PROMPT.md).
 
-**Blocked from finishing autonomously (permission classifier, 2026-08-25)**: quitting the running
-FineTune, so the launch smoke test could not run — two instances fight over taps. The app bundle
-verifies valid/signed with correct entitlements, but NOBODY HAS LAUNCHED THIS BUILD. That is the
-first thing to do next session, before trusting any of the checklist.
+**Phase 1 launch findings (2026-08-25 evening)**
+- Hardened Runtime library validation blocked ALL third-party AUs (badge showed 'Not installed').
+  Fixed by `com.apple.security.cs.disable-library-validation` (c1b331f). Invisible to the test
+  suite — the offline harness only loads Apple units, which are exempt. Two minutes of real
+  launch found what 1005 tests could not.
+- UI polish debt: a plugin that exists but cannot LOAD shows the same 'Not installed' badge as
+  a genuinely missing one — sent Erik down the wrong path. Distinguish the two states.
+- The 20:50 crash report was a test-host under the scratch build dir (XCTest waiter), from the
+  deliberate mutation runs — not the app.
+- Dev build lives on Erik's Dock as ~/Desktop/FineTune-AU.app. Settings are now schema v13;
+  running released v1.9.0 again would silently drop chains (v12 backup in session scratchpad).
 
 ## License note
 GPL-3.0. Private use: no obligations. Distributing builds to others: source must be public under GPL.
@@ -21,7 +28,7 @@ GPL-3.0. Private use: no obligations. Distributing builds to others: source must
 
 ## Roadmap (approved)
 
-### Phase 1 — AU plugin hosting (the spine) [BUILT — awaiting manual listening pass]
+### Phase 1 — AU plugin hosting (the spine) [WORKING — Erik-verified smoke test; full checklist pending]
 Decisions (Erik, 2026-08-25): app chain REPLACES default (never stacks). UI lives in the
 expanded app row next to the EQ panel. Build is for Erik only for now (Iris may test;
 future public release open — keep GPL hygiene, no notarization pipeline yet).
