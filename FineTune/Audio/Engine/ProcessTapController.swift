@@ -1,5 +1,6 @@
 // FineTune/Audio/Engine/ProcessTapController.swift
 import AudioToolbox
+import Darwin.C  // OSMemoryBarrier
 import Foundation
 import os
 
@@ -16,13 +17,15 @@ import os
 //    - processAudioCallback() — unified callback with runtime role via callbackID
 //    - Reads nonisolated(unsafe) vars; writes _peakLevel/_secondaryPeakLevel,
 //      _primaryCurrentVolume/_secondaryCurrentVolume, _lastRenderHostTime, _hasRenderedAudio
+//    - Primary role only: renders the AU chain through auChainState — one render()
+//      per callback, memcpy for mirrored buffers (see processMappedBuffers, spec E1).
 //    - MUST NOT allocate, lock, log, or call ObjC. See .claude/rules/rt-safety.md
 //
 // The nonisolated(unsafe) annotation marks variables that cross the thread boundary.
 // Aligned Float32/Bool/Int reads/writes are atomic on Apple ARM64/x86-64.
 
 @MainActor
-final class ProcessTapController: ProcessTapControlling {
+final class ProcessTapController: ProcessTapControlling, AUChainHosting {
     let app: AudioApp
     private let logger: Logger
     // Note: This queue is passed to AudioDeviceCreateIOProcIDWithBlock but the actual
@@ -125,6 +128,10 @@ final class ProcessTapController: ProcessTapControlling {
     private nonisolated(unsafe) var autoEQProcessor: AutoEQProcessor?
     private nonisolated(unsafe) var loudnessCompensator: LoudnessCompensator?
     private nonisolated(unsafe) var loudnessEqualizerProcessor: LoudnessEqualizer?
+    /// Immutable AU effect-chain render plan, published by AUChainManager (spec §2.2).
+    /// Read by the primary callback only — the secondary tap stays dry through a
+    /// crossfade (§C), so there is no secondary counterpart.
+    private nonisolated(unsafe) var auChainState: AUChainRenderState?
     /// Last effective loudness volume (device × app) passed to updateLoudnessCompensation.
     /// Used by createSecondaryTap to initialize secondary compensator with the correct volume.
     private var _lastLoudnessVolume: Float = 1.0
@@ -286,6 +293,30 @@ final class ProcessTapController: ProcessTapControlling {
             secondaryLoudnessEqualizerProcessor = newSecondary
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { _ = secondary }
         }
+    }
+
+    /// Publishes a new AU chain render plan to the audio callback (spec §2.2).
+    /// Same swap idiom as `updateLoudnessEqualization`: store the new pointer
+    /// (aligned pointer stores are atomic on ARM64/x86-64), barrier, then release
+    /// the old state 0.5s later — longer than any worst-case buffer (4096 frames
+    /// @ 44.1kHz ≈ 93ms), so a callback already inside `render()` on the old state
+    /// finishes against live memory.
+    ///
+    /// E15: the caller must wait out that same grace period after `setAUChain(nil)`
+    /// before calling `deallocateRenderResources()` on any member AU.
+    func setAUChain(_ state: AUChainRenderState?) {
+        let old = auChainState
+        auChainState = state
+        OSMemoryBarrier()
+        if let old {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { _ = old }
+        }
+    }
+
+    /// Nominal rate of the primary aggregate, used by AUChainManager to build the
+    /// chain at the right rate and to detect stale builds (spec §2.6).
+    var nominalSampleRate: Double? {
+        try? primaryResources.aggregateDeviceID.readNominalSampleRate()
     }
 
     // MARK: - Multi-Device Aggregate Configuration
@@ -1328,10 +1359,21 @@ final class ProcessTapController: ProcessTapControlling {
         eqProc: EQProcessor?,
         autoEQProc: AutoEQProcessor?,
         loudnessEqualizerProc: LoudnessEqualizer?,
-        loudnessCompensatorProc: LoudnessCompensator?
+        loudnessCompensatorProc: LoudnessCompensator?,
+        auChain: AUChainRenderState? = nil
     ) {
         let inputBufferCount = inputBuffers.count
         let outputBufferCount = outputBuffers.count
+
+        // AU chain, once per callback (E1). A stacked mirroring aggregate presents one
+        // identical stereo buffer per sub-device; the chain is stateful, so it renders on
+        // the FIRST eligible buffer only and every later eligible buffer gets a memcpy of
+        // that same wet output. Rendering per buffer would run time effects at 2×.
+        var auChainDidRender = false
+        // False when that render passed the buffer through dry (gate contention / empty
+        // chain). The retained mirror store then still holds the PREVIOUS callback's
+        // audio, so mirrored buffers must be left dry too rather than copied.
+        var auChainProducedWet = false
 
         for outputIndex in 0..<outputBufferCount {
             let outputBuffer = outputBuffers[outputIndex]
@@ -1449,6 +1491,19 @@ final class ProcessTapController: ProcessTapControlling {
 
             if let eq = eq, eq.isEnabled, eqCanProcessStereoInterleaved {
                 eq.process(input: outputSamples, output: outputSamples, frameCount: frameCount)
+            }
+
+            // Per-app AU effect chain (spec §2.4) — after EQ, before device correction.
+            // Same stereo-interleaved gate as EQ; non-stereo taps bypass exactly as today.
+            if let auChain, eqCanProcessStereoInterleaved {
+                if auChainDidRender {
+                    if auChainProducedWet {
+                        auChain.copyLastRenderOutput(into: outputSamples, frameCount: frameCount)
+                    }
+                } else {
+                    auChainDidRender = true
+                    auChainProducedWet = auChain.render(interleavedStereo: outputSamples, frameCount: frameCount)
+                }
             }
 
             // Per-device AutoEQ correction (after per-app EQ)
@@ -1589,6 +1644,11 @@ final class ProcessTapController: ProcessTapControlling {
         let autoEQProc: AutoEQProcessor?
         let loudnessEqualizerProc: LoudnessEqualizer?
         let loudnessCompensatorProc: LoudnessCompensator?
+        // AU chain renders in the primary role only (§C): AU instances cannot be
+        // duplicated for the secondary tap, so the incoming device stays dry through
+        // the crossfade. Promotion needs no swap — the state is role-agnostic and the
+        // render state's trylock gate closes the one-buffer overlap window.
+        let auChain: AUChainRenderState?
 
         if isPrimary {
             currentVol = _primaryCurrentVolume
@@ -1603,6 +1663,7 @@ final class ProcessTapController: ProcessTapControlling {
             autoEQProc = autoEQProcessor
             loudnessEqualizerProc = loudnessEqualizerProcessor
             loudnessCompensatorProc = loudnessCompensator
+            auChain = auChainState
         } else {
             currentVol = _secondaryCurrentVolume
             // Secondary uses sine curve (0→1).
@@ -1615,6 +1676,7 @@ final class ProcessTapController: ProcessTapControlling {
             autoEQProc = secondaryAutoEQProcessor
             loudnessEqualizerProc = secondaryLoudnessEqualizerProcessor
             loudnessCompensatorProc = secondaryLoudnessCompensator
+            auChain = nil
         }
 
         Self.processMappedBuffers(
@@ -1630,7 +1692,8 @@ final class ProcessTapController: ProcessTapControlling {
             eqProc: eqProc,
             autoEQProc: autoEQProc,
             loudnessEqualizerProc: loudnessEqualizerProc,
-            loudnessCompensatorProc: loudnessCompensatorProc
+            loudnessCompensatorProc: loudnessCompensatorProc,
+            auChain: auChain
         )
 
         if isPrimary {
