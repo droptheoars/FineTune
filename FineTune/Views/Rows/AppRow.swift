@@ -34,9 +34,11 @@ struct AppRow: View {
     let isEQExpanded: Bool
     let onEQToggle: () -> Void
     let isFocused: Bool
+    let auChain: AUChainPanelModel
 
     @State private var isIconHovered = false
     @State private var localEQSettings: EQSettings
+    @State private var panelMode: AppPanelMode = .eq
 
     init(
         app: AudioApp,
@@ -68,7 +70,8 @@ struct AppRow: View {
         onRenameUserPreset: @escaping (UUID, String) -> Void = { _, _ in },
         isEQExpanded: Bool = false,
         onEQToggle: @escaping () -> Void = {},
-        isFocused: Bool = false
+        isFocused: Bool = false,
+        auChain: AUChainPanelModel = AUChainPanelModel()
     ) {
         self.app = app
         self.volume = volume
@@ -100,6 +103,7 @@ struct AppRow: View {
         self.isEQExpanded = isEQExpanded
         self.onEQToggle = onEQToggle
         self.isFocused = isFocused
+        self.auChain = auChain
         // Initialize local EQ state for reactive UI updates
         self._localEQSettings = State(initialValue: eqSettings)
     }
@@ -180,32 +184,45 @@ struct AppRow: View {
             }
             .frame(height: DesignTokens.Dimensions.rowContentHeight)
         } expandedContent: {
-            // EQ panel - shown when expanded
+            // EQ | Effects switch, then the selected panel (§5.1).
             // SwiftUI calculates natural height via conditional rendering
-            EQPanelView(
-                settings: $localEQSettings,
-                userPresets: userPresets,
-                onPresetSelected: { preset in
-                    localEQSettings = preset.settings
-                    onEQChange(preset.settings)
-                },
-                onUserPresetSelected: { userPreset in
-                    localEQSettings = userPreset.settings
-                    onUserPresetSelected(userPreset)
-                },
-                onSettingsChanged: { settings in
-                    onEQChange(settings)
-                },
-                onSavePreset: onSavePreset,
-                onDeleteUserPreset: onDeleteUserPreset,
-                onRenameUserPreset: onRenameUserPreset
-            )
+            VStack(spacing: DesignTokens.Spacing.xs) {
+                ModeToggle(mode: $panelMode, options: [(.eq, "EQ"), (.effects, "Effects")])
+                    .frame(width: 180)
+
+                if panelMode == .eq {
+                    eqPanel
+                } else {
+                    AUChainPanelView(model: auChain)
+                }
+            }
             .padding(.top, DesignTokens.Spacing.sm)
         }
         .onChange(of: eqSettings) { _, newValue in
             // Sync from parent when external EQ settings change
             localEQSettings = newValue
         }
+    }
+
+    private var eqPanel: some View {
+        EQPanelView(
+            settings: $localEQSettings,
+            userPresets: userPresets,
+            onPresetSelected: { preset in
+                localEQSettings = preset.settings
+                onEQChange(preset.settings)
+            },
+            onUserPresetSelected: { userPreset in
+                localEQSettings = userPreset.settings
+                onUserPresetSelected(userPreset)
+            },
+            onSettingsChanged: { settings in
+                onEQChange(settings)
+            },
+            onSavePreset: onSavePreset,
+            onDeleteUserPreset: onDeleteUserPreset,
+            onRenameUserPreset: onRenameUserPreset
+        )
     }
 }
 
@@ -266,5 +283,34 @@ struct AppRow: View {
                 )
             }
         }
+    }
+}
+
+#Preview("App Row - Expanded (EQ | Effects)") {
+    PreviewContainer {
+        AppRow(
+            app: MockData.sampleApps[0],
+            volume: 1.0,
+            audioLevel: 0.4,
+            devices: MockData.sampleDevices,
+            selectedDeviceUID: MockData.sampleDevices[0].uid,
+            onVolumeChange: { _ in },
+            onMuteChange: { _ in },
+            onDeviceSelected: { _ in },
+            isEQExpanded: true,
+            auChain: AUChainPanelModel(
+                isDefaultChain: false,
+                slots: [
+                    AUSlotViewState(
+                        id: UUID(),
+                        displayName: "RC-20 Retro Color",
+                        manufacturer: "XLN Audio",
+                        isBypassed: false,
+                        status: .ready
+                    )
+                ],
+                totalLatencySamples: 576
+            )
+        )
     }
 }

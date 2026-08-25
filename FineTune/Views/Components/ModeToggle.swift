@@ -1,16 +1,14 @@
 // FineTune/Views/Components/ModeToggle.swift
 import SwiftUI
 
-/// A segmented control for switching between single and multi device modes
-struct ModeToggle: View {
-    @Binding var mode: DeviceSelectionMode
+/// A segmented control over any set of modes. `ModeToggle(mode:)` keeps the
+/// device single/multi call sites unchanged; other surfaces (the EQ / Effects
+/// switch in the expanded app row) pass their own options.
+struct ModeToggle<Mode: Hashable>: View {
+    @Binding var mode: Mode
+    let options: [(mode: Mode, label: String)]
 
-    @State private var hoveredOption: DeviceSelectionMode?
-
-    private let options: [(mode: DeviceSelectionMode, label: String)] = [
-        (.single, "Single"),
-        (.multi, "Multi")
-    ]
+    @State private var hoveredOption: Mode?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -29,7 +27,7 @@ struct ModeToggle: View {
     }
 
     @ViewBuilder
-    private func optionButton(_ optionMode: DeviceSelectionMode, label: String) -> some View {
+    private func optionButton(_ optionMode: Mode, label: String) -> some View {
         let isSelected = mode == optionMode
         let isHovered = hoveredOption == optionMode
 
@@ -62,6 +60,12 @@ struct ModeToggle: View {
                 hoveredOption = hovering ? optionMode : nil
             }
         }
+    }
+}
+
+extension ModeToggle where Mode == DeviceSelectionMode {
+    init(mode: Binding<DeviceSelectionMode>) {
+        self.init(mode: mode, options: [(.single, "Single"), (.multi, "Multi")])
     }
 }
 

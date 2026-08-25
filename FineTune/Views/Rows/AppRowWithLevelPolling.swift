@@ -34,6 +34,7 @@ struct AppRowWithLevelPolling: View {
     let isEQExpanded: Bool
     let onEQToggle: () -> Void
     let isFocused: Bool
+    let auChain: AUChainPanelModel
 
     @State private var displayLevel: Float = 0
     @State private var levelTimer: Timer?
@@ -69,7 +70,8 @@ struct AppRowWithLevelPolling: View {
         onRenameUserPreset: @escaping (UUID, String) -> Void = { _, _ in },
         isEQExpanded: Bool = false,
         onEQToggle: @escaping () -> Void = {},
-        isFocused: Bool = false
+        isFocused: Bool = false,
+        auChain: AUChainPanelModel = AUChainPanelModel()
     ) {
         self.app = app
         self.volume = volume
@@ -102,6 +104,7 @@ struct AppRowWithLevelPolling: View {
         self.isEQExpanded = isEQExpanded
         self.onEQToggle = onEQToggle
         self.isFocused = isFocused
+        self.auChain = auChain
     }
 
     var body: some View {
@@ -135,7 +138,8 @@ struct AppRowWithLevelPolling: View {
             onRenameUserPreset: onRenameUserPreset,
             isEQExpanded: isEQExpanded,
             onEQToggle: onEQToggle,
-            isFocused: isFocused
+            isFocused: isFocused,
+            auChain: auChain
         )
         .onAppear {
             if isPopupVisible {
