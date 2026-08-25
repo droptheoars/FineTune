@@ -106,7 +106,8 @@ private func processWithDefaults(
     eqProc: EQProcessor? = nil,
     autoEQProc: AutoEQProcessor? = nil,
     loudnessEqualizerProc: LoudnessEqualizer? = nil,
-    loudnessCompensatorProc: LoudnessCompensator? = nil
+    loudnessCompensatorProc: LoudnessCompensator? = nil,
+    auChain: AUChainRenderState? = nil
 ) {
     ProcessTapController.processMappedBuffers(
         inputBuffers: input.bufferList,
@@ -121,8 +122,56 @@ private func processWithDefaults(
         eqProc: eqProc,
         autoEQProc: autoEQProc,
         loudnessEqualizerProc: loudnessEqualizerProc,
-        loudnessCompensatorProc: loudnessCompensatorProc
+        loudnessCompensatorProc: loudnessCompensatorProc,
+        auChain: auChain
     )
+}
+
+// MARK: - AU Chain Test Helpers (E1)
+
+/// Counts render-block invocations so a test can tell "the chain ran" from
+/// "the chain ran twice" — the 2× time-effects bug E1 exists to prevent.
+private final class RenderCounter: @unchecked Sendable {
+    var count = 0
+}
+
+/// Well-behaved node that pulls exactly `frameCount` and scales in place, but
+/// with a DIFFERENT gain on every invocation: ×2 on the first call, ×3 after.
+/// A second render inside one callback therefore changes the audio too, not
+/// only the counter.
+private func countingGainStub(_ counter: RenderCounter) -> AUChainRawRenderBlock {
+    return { _, tsPtr, frameCount, _, outputData, pull in
+        counter.count += 1
+        let gain: Float = counter.count == 1 ? 2.0 : 3.0
+        guard let pull else { return kAudioUnitErr_NoConnection }
+        var pullFlags = AudioUnitRenderActionFlags()
+        let status = withUnsafeMutablePointer(to: &pullFlags) {
+            pull($0, tsPtr, frameCount, 0, outputData)
+        }
+        guard status == noErr else { return status }
+        let abl = UnsafeMutableAudioBufferListPointer(outputData)
+        for b in 0..<abl.count {
+            guard let data = abl[b].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            for i in 0..<Int(frameCount) { data[i] *= gain }
+        }
+        return noErr
+    }
+}
+
+private func makeCountingChain(_ counter: RenderCounter) -> AUChainRenderState {
+    AUChainRenderState(
+        nodes: [.init(rawRenderBlock: countingGainStub(counter), latencySamples: 0)],
+        sampleRate: 48_000
+    )
+}
+
+/// Every sample of the buffer at `index` equals `value`.
+private func expectAllSamples(_ abl: TestABL, at index: Int, equal value: Float, _ note: String) {
+    let data = abl.data(at: index)
+    for i in 0..<abl.sampleCount(at: index) where data[i] != value {
+        Issue.record("\(note): sample \(i) of buffer \(index) is \(data[i]), expected \(value)")
+        return
+    }
 }
 
 private func repositoryRootURL() -> URL {
@@ -1185,5 +1234,107 @@ struct LoudnessIntegrationTests {
         }
         #expect(diffCount > 0,
                 "Adding loudness equalizer should change output beyond compensator alone")
+    }
+}
+
+// MARK: - AU Chain Once-Per-Callback Tests (spec §6-E1)
+
+/// A stacked mirroring aggregate hands the callback one IDENTICAL stereo buffer
+/// per sub-device. The AU chain is stateful, so it must render on the first
+/// eligible buffer only; later eligible buffers get a memcpy of that same wet
+/// output. Rendering per buffer runs time-based effects at 2× — the bug these
+/// tests exist to catch. `AUChainRenderStateTests` covers the mirror primitive;
+/// this suite covers the callback-scope flags in `processMappedBuffers`.
+@Suite("ProcessTapController — AU Chain Once Per Callback (E1)")
+struct AUChainCallbackScopeTests {
+
+    private static let frames = 64
+    private static let dry: Float = 0.25   // input × unity gain, below the 0.95 limiter threshold
+    private static let wet: Float = 0.5    // dry × the stub's first-invocation gain of 2.0
+
+    @Test("Single eligible buffer renders the chain exactly once")
+    func singleBufferRendersOnce() {
+        let counter = RenderCounter()
+        let input = TestABL(buffers: [(2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol,
+                            auChain: makeCountingChain(counter))
+
+        #expect(counter.count == 1, "one HAL callback must produce exactly one render")
+        expectAllSamples(output, at: 0, equal: Self.wet, "single buffer should be wet")
+    }
+
+    @Test("Two mirrored stereo buffers render once; the second is a mirror copy")
+    func mirroredBuffersRenderOnce() {
+        let counter = RenderCounter()
+        let input = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        fill(input, bufferIndex: 1, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol,
+                            auChain: makeCountingChain(counter))
+
+        #expect(counter.count == 1,
+                "stacked aggregate: a second render per callback runs time effects at 2× (E1)")
+        expectAllSamples(output, at: 0, equal: Self.wet, "first buffer renders")
+        // The stub gains ×3 on a second invocation, so a double render would put
+        // 0.75 here instead of the mirrored 0.5.
+        expectAllSamples(output, at: 1, equal: Self.wet, "second buffer must be the mirror copy")
+    }
+
+    @Test("render() == false leaves both mirrored buffers dry, with no mirror copy")
+    func falseRenderLeavesBothBuffersDry() {
+        // Empty chain: render() returns false at its entry guard without touching
+        // the buffer. The retained mirror store is empty, so a mirror copy on this
+        // path would ZERO buffer 1 here — and in production it would substitute the
+        // PREVIOUS callback's wet audio for this callback's dry frames.
+        let emptyChain = AUChainRenderState(nodes: [], sampleRate: 48_000)
+        let input = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        fill(input, bufferIndex: 1, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol, auChain: emptyChain)
+
+        expectAllSamples(output, at: 0, equal: Self.dry, "dry passthrough, not zeroed")
+        expectAllSamples(output, at: 1, equal: Self.dry, "no mirror copy on the false path")
+    }
+
+    @Test("First buffer non-stereo: the chain renders once, on the later eligible buffer")
+    func firstBufferIneligibleRendersOnceOnLater() {
+        let counter = RenderCounter()
+        let input = TestABL(buffers: [(1, Self.frames), (2, Self.frames)])
+        let output = TestABL(buffers: [(1, Self.frames), (2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        fill(input, bufferIndex: 1, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol,
+                            auChain: makeCountingChain(counter))
+
+        #expect(counter.count == 1, "ineligible buffers must not consume the one render")
+        expectAllSamples(output, at: 0, equal: Self.dry, "mono buffer bypasses the chain")
+        expectAllSamples(output, at: 1, equal: Self.wet, "stereo buffer renders")
+    }
+
+    @Test("Non-stereo tap never invokes the chain")
+    func monoTapNeverRendersChain() {
+        let counter = RenderCounter()
+        let input = TestABL(buffers: [(1, Self.frames)])
+        let output = TestABL(buffers: [(1, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol,
+                            auChain: makeCountingChain(counter))
+
+        #expect(counter.count == 0, "chain is stereo-gated exactly like EQ")
+        expectAllSamples(output, at: 0, equal: Self.dry, "mono behaviour unchanged")
     }
 }

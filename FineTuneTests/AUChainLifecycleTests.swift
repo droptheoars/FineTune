@@ -28,6 +28,7 @@ private enum StubEvent: Equatable {
     case allocate
     case deallocate
     case capture
+    case makeNodeSpec
 }
 
 /// Thread-safe ordered log — the stub is driven from the builder queue.
@@ -45,6 +46,22 @@ private final class EventLog: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries.map(\.event)
+    }
+
+    /// True when a `.makeNodeSpec` occurs while the unit's render resources are
+    /// gone — i.e. the published render plan captured a render block after
+    /// `deallocateRenderResources` and before the matching re-allocate (F1).
+    var capturedNodeSpecWhileDeallocated: Bool {
+        var allocated = false
+        for event in events {
+            switch event {
+            case .allocate: allocated = true
+            case .deallocate: allocated = false
+            case .makeNodeSpec where !allocated: return true
+            default: break
+            }
+        }
+        return false
     }
 
     func firstTime(of event: StubEvent) -> Date? {
@@ -89,8 +106,9 @@ private final class StubUnit: AUChainUnit, @unchecked Sendable {
     }
 
     func makeNodeSpec(sampleRate: Double) -> AUChainRenderState.NodeSpec {
+        log.record(.makeNodeSpec)
         // Silent passthrough node — never actually rendered by these tests.
-        AUChainRenderState.NodeSpec(rawRenderBlock: { _, _, _, _, _, _ in noErr }, latencySamples: 0)
+        return AUChainRenderState.NodeSpec(rawRenderBlock: { _, _, _, _, _, _ in noErr }, latencySamples: 0)
     }
 }
 
@@ -247,7 +265,7 @@ struct AppAUChainFailureTests {
 
         // Restore failure is a badge, not a lifecycle failure — audio still works.
         #expect(chain.slots[0].stateRestoreFailed)
-        #expect(factory.made[0].log.events == [.configure, .restore, .allocate])
+        #expect(factory.made[0].log.events == [.configure, .restore, .allocate, .makeNodeSpec])
         #expect((host.published.last ?? nil) != nil)
     }
 
@@ -278,6 +296,44 @@ struct AppAUChainFailureTests {
         await chain.waitForPendingWork()
         #expect(chain.slots.last?.state == .ready)
         #expect(!wedged.events.contains(.allocate), "the old queue is still wedged, and the chain built anyway")
+    }
+}
+
+// MARK: - Rate rebuild
+
+@Suite("AppAUChain — rate rebuild")
+@MainActor
+struct AppAUChainRateRebuildTests {
+
+    @Test("A rate rebuild never publishes a node whose render resources are deallocated")
+    func rebuildNeverPublishesDeallocatedUnits() async {
+        let factory = StubFactory()
+        let chain = makeChain(
+            plugins: [makeConfig(name: "First"), makeConfig(name: "Second")],
+            factory: factory,
+            grace: 0.05
+        )
+        let host = FakeHost()
+        host.rate = 44100
+
+        chain.attach(to: host, sampleRate: 44100)
+        await chain.waitForPendingWork()
+        #expect(chain.slots.allSatisfy { $0.state == .ready })
+
+        // Device switch 44.1k → 48k. Every instance is deallocated and re-set-up;
+        // no intermediate publish may reference one whose resources are gone.
+        host.rate = 48000
+        chain.rateChanged(to: 48000)
+        await chain.waitForPendingWork()
+
+        #expect(chain.slots.allSatisfy { $0.state == .ready })
+        #expect(factory.made.count == 2, "the rebuild reuses instances, it does not re-instantiate")
+        for (index, unit) in factory.made.enumerated() {
+            #expect(
+                !unit.log.capturedNodeSpecWhileDeallocated,
+                "slot \(index) was published into a render state while deallocated (F1)"
+            )
+        }
     }
 }
 

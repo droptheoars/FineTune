@@ -240,8 +240,9 @@ final class AppAUChain {
     private var generation: UInt64 = 0
 
     /// In-flight lifecycle Tasks (bring-up, rate rebuild), so callers can await
-    /// a settled chain instead of polling for it.
-    private var pendingTasks: [Task<Void, Never>] = []
+    /// a settled chain instead of polling for it. Each entry removes itself on
+    /// completion — this app runs all day and handles must not accumulate.
+    private var pendingTasks: [UUID: Task<Void, Never>] = [:]
 
     private var currentState: AUChainRenderState?
     /// Slot ids of `currentState`'s nodes, in the same order — the map used to
@@ -290,15 +291,6 @@ final class AppAUChain {
         rebuildRenderState()
     }
 
-    /// The tap went away. Instances and their internal state stay alive — taps
-    /// are disposable, chains are not (§2.1). Use `release()` for app teardown.
-    func detach() {
-        host?.setAUChain(nil)
-        host = nil
-        currentState = nil
-        publishedSlotIDs = []
-    }
-
     /// Device switch / A2DP↔SCO re-rate (§2.5): drop the chain first, then
     /// dealloc → reformat → realloc every instance. Plugin state survives, open
     /// plugin windows stay open.
@@ -306,11 +298,20 @@ final class AppAUChain {
         guard sampleRate != newRate else { return }
         sampleRate = newRate
         generation &+= 1
+        // F1: demote BEFORE the nil-swap. Every live instance is about to have
+        // its render resources deallocated, and a slot whose resources are gone
+        // is not `ready` — leaving it ready lets any rebuildRenderState during
+        // the rebuild window (a sibling slot finishing, a bypass toggle, an
+        // attach) publish a render block that has already been deallocated.
+        // Demoting makes `isActive` false, so every consumer — publish filter,
+        // badges, diagnostics — gets the right answer without its own guard.
+        // Matches §2.5: ready --rateChange--> allocating.
+        for index in slots.indices where slots[index].unit != nil {
+            slots[index].state = .allocating
+        }
         publish(nil, slotIDs: [])
         let generationAtStart = generation
-        pendingTasks.append(Task { @MainActor in
-            await self.rebuildInstances(generation: generationAtStart, rate: newRate)
-        })
+        track { await self.rebuildInstances(generation: generationAtStart, rate: newRate) }
     }
 
     /// App left the list (§2.6, E10): capture state, close windows, drop the
@@ -504,7 +505,14 @@ final class AppAUChain {
         guard let host, let rate = sampleRate else { return }
         // §E stale-device guard: a build that lands after the tap moved to a
         // different rate must rebuild rather than publish.
-        if let hostRate = host.nominalSampleRate, hostRate != rate {
+        // §E stale-device guard. A rate the tap cannot report is a rate we
+        // cannot verify, so nothing wet is published — dropping the chain is
+        // always safe, publishing a state built for the wrong device is not.
+        guard let hostRate = host.nominalSampleRate else {
+            publish(nil, slotIDs: [])
+            return
+        }
+        if hostRate != rate {
             rateChanged(to: hostRate)
             return
         }
@@ -529,9 +537,15 @@ final class AppAUChain {
     private func bringUp(_ slotID: UUID) {
         guard sampleRate != nil else { return }
         let generationAtStart = generation
-        pendingTasks.append(Task { @MainActor in
-            await self.bringSlotUp(slotID, existing: nil, generation: generationAtStart)
-        })
+        track { await self.bringSlotUp(slotID, existing: nil, generation: generationAtStart) }
+    }
+
+    private func track(_ body: @escaping @MainActor () async -> Void) {
+        let key = UUID()
+        pendingTasks[key] = Task { @MainActor in
+            await body()
+            self.pendingTasks.removeValue(forKey: key)
+        }
     }
 
     /// Awaits every in-flight lifecycle Task, including ones they spawn. The
@@ -539,9 +553,7 @@ final class AppAUChain {
     /// rebuild) while it is being awaited.
     func waitForPendingWork() async {
         while !pendingTasks.isEmpty {
-            let inFlight = pendingTasks
-            pendingTasks.removeAll()
-            for task in inFlight { await task.value }
+            for task in Array(pendingTasks.values) { await task.value }
         }
     }
 

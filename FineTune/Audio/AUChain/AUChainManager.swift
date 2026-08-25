@@ -60,12 +60,6 @@ final class AUChainManager {
         chains[identifier]?.rateChanged(to: newRate)
     }
 
-    /// The app's tap went away, but the app has not. Instances stay alive so a
-    /// health-recreate or sleep/wake keeps every plugin's internal state (§2.1).
-    func detach(identifier: String) {
-        chains[identifier]?.detach()
-    }
-
     /// The app left the list (§2.6, E10): capture, close windows, release
     /// instances, and forget the chain. It is rebuilt from config on demand.
     func release(identifier: String) {

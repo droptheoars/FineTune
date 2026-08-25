@@ -115,10 +115,21 @@ final class AUChainRenderState: @unchecked Sendable {
             // `renderBlock` is a declared ObjC property; KVC returns the block
             // object itself (__NSMallocBlock__). A block value and AnyObject
             // share representation, so the bitcast is a supported reinterpret.
-            guard let blockObject = audioUnit.value(forKey: "renderBlock") else {
-                preconditionFailure("AUAudioUnit.renderBlock unavailable via KVC")
+            if let blockObject = audioUnit.value(forKey: "renderBlock") {
+                self.rawRenderBlock = unsafeBitCast(blockObject as AnyObject, to: AUChainRawRenderBlock.self)
+            } else {
+                // Should be unreachable; guards against a future macOS renaming
+                // the property. Degraded mode: wrap the bridged closure — audio
+                // keeps working, at the cost of ~1 small malloc per render call
+                // (the bridging cost the raw path exists to avoid). Loud in the
+                // log, not a crash on a user's machine at chain-build time.
+                Logger(subsystem: "com.finetuneapp.FineTune", category: "AUChainRenderState")
+                    .fault("renderBlock unavailable via KVC — falling back to bridged block (allocates on the RT path)")
+                let bridged = audioUnit.renderBlock
+                self.rawRenderBlock = { actionFlags, ts, frameCount, bus, abl, pull in
+                    bridged(actionFlags, ts, frameCount, bus, abl, pull)
+                }
             }
-            self.rawRenderBlock = unsafeBitCast(blockObject as AnyObject, to: AUChainRawRenderBlock.self)
             self.latencySamples = latencySamples
         }
 
@@ -154,26 +165,26 @@ final class AUChainRenderState: @unchecked Sendable {
         var servedFrames: Int32 = 0
     }
 
-    /// Owns the NodeRTState allocation. The pull block captures this box
-    /// strongly, so even if a v2 bridge retains the pull block beyond this
-    /// state's lifetime, the bookkeeping memory it points at stays valid.
-    private final class NodeRTBox {
-        let state: UnsafeMutablePointer<NodeRTState>
-        init() {
-            state = .allocate(capacity: 1)
-            state.initialize(to: NodeRTState())
-        }
-        deinit {
-            state.deinitialize(count: 1)
-            state.deallocate()
-        }
-    }
-
+    // LIFETIME of pull-block captures (scratch pointers + the rt pointer below):
+    // everything a pull block touches shares this state's lifetime, and that is
+    // sufficient because a pull block can never execute after this state is
+    // released. Mechanism: AURenderPullInputBlock is a per-invocation parameter
+    // of the render block — the AU pulls input only while servicing the render
+    // call that passed it. An AU (or the v2 bridge) may RETAIN a pull block
+    // between calls, but it always INVOKES the one passed to the current call:
+    // verified against Apple's v2 bridge (AUDelay, 200 renders alternating two
+    // marker blocks — zero stale invocations), and any implementation cached
+    // otherwise would misroute input for every host that creates its pull block
+    // per call, which Swift's bridged property does for typical hosts. render()
+    // itself only runs while the owner keeps this state published, and the
+    // owner's 0.5s grace (§2.2/E15) fences deinit past the last in-flight call.
     private final class Node {
         let renderBlock: AUChainRawRenderBlock
         let pullBlock: AUChainRawPullBlock
         let latencySamples: Int
-        let box: NodeRTBox
+        /// Heap-allocated so the pull block can capture a stable pointer
+        /// without capturing the Node (which would be a retain cycle).
+        let rt: UnsafeMutablePointer<NodeRTState>
         /// Output scratch (the ping-pong buffer of opposite parity to the input).
         let outL: UnsafeMutablePointer<Float>
         let outR: UnsafeMutablePointer<Float>
@@ -184,20 +195,22 @@ final class AUChainRenderState: @unchecked Sendable {
             renderBlock: @escaping AUChainRawRenderBlock,
             pullBlock: @escaping AUChainRawPullBlock,
             latencySamples: Int,
-            box: NodeRTBox,
+            rt: UnsafeMutablePointer<NodeRTState>,
             outL: UnsafeMutablePointer<Float>,
             outR: UnsafeMutablePointer<Float>
         ) {
             self.renderBlock = renderBlock
             self.pullBlock = pullBlock
             self.latencySamples = latencySamples
-            self.box = box
+            self.rt = rt
             self.outL = outL
             self.outR = outR
             self.abl = AudioBufferList.allocate(maximumBuffers: 2)
         }
 
         deinit {
+            rt.deinitialize(count: 1)
+            rt.deallocate()
             // AudioBufferList.allocate uses malloc under the hood.
             free(abl.unsafeMutablePointer)
         }
@@ -252,8 +265,13 @@ final class AUChainRenderState: @unchecked Sendable {
         totalLatencySamples = specs.reduce(0) { $0 + $1.latencySamples }
 
         let cap = Self.sliceCapacity
-        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: 4 * cap)
-        scratch.initialize(repeating: 0, count: 4 * cap)
+        // 4 parity regions + one region of tail padding: an AU that over-pulls
+        // into host-provided scratch (nil-mData branch) AND ignores the
+        // reported mDataByteSize reads up to readOffset+requested ≤ 2×cap
+        // frames past a region start (both bounded by maximumFramesToRender);
+        // the pad keeps even that overread inside this allocation.
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: 5 * cap)
+        scratch.initialize(repeating: 0, count: 5 * cap)
         scratchBase = scratch
         let p0L = scratch
         let p0R = scratch + cap
@@ -283,9 +301,10 @@ final class AUChainRenderState: @unchecked Sendable {
         built.reserveCapacity(specs.count)
         for (index, spec) in specs.enumerated() {
             let inputIsParity0 = (index & 1) == 0
-            let box = NodeRTBox()
+            let rt = UnsafeMutablePointer<NodeRTState>.allocate(capacity: 1)
+            rt.initialize(to: NodeRTState())
             let pull = Self.makePullBlock(
-                box: box,
+                rt: rt,
                 inL: inputIsParity0 ? p0L : p1L,
                 inR: inputIsParity0 ? p0R : p1R,
                 capacity: cap
@@ -294,7 +313,7 @@ final class AUChainRenderState: @unchecked Sendable {
                 renderBlock: spec.rawRenderBlock,
                 pullBlock: pull,
                 latencySamples: spec.latencySamples,
-                box: box,
+                rt: rt,
                 outL: inputIsParity0 ? p1L : p0L,
                 outR: inputIsParity0 ? p1R : p0R
             ))
@@ -315,13 +334,12 @@ final class AUChainRenderState: @unchecked Sendable {
     /// Serves the node's fixed input scratch at the per-cycle read offset.
     /// Created once at build time as a real ObjC block — zero per-call bridging.
     private static func makePullBlock(
-        box: NodeRTBox,
+        rt: UnsafeMutablePointer<NodeRTState>,
         inL: UnsafeMutablePointer<Float>,
         inR: UnsafeMutablePointer<Float>,
         capacity: Int
     ) -> AUChainRawPullBlock {
         return { _, _, requestedCount, _, inputData in
-            let rt = box.state
             let requested = Int(requestedCount)
             let provided = Int(rt.pointee.providedFrames)
             let readOffset = Int(rt.pointee.readOffset)
@@ -399,7 +417,7 @@ final class AUChainRenderState: @unchecked Sendable {
 
             for index in 0..<nodeCount {
                 let node = nodes[index]
-                let rt = node.box.state
+                let rt = node.rt
 
                 // Rebind the output ABL to this node's fixed scratch — the AU
                 // may have substituted its own pointers last cycle.
@@ -514,7 +532,7 @@ final class AUChainRenderState: @unchecked Sendable {
     /// loads of RT-written fields — momentarily stale, never torn.
     func diagnosticsSnapshot() -> [NodeDiagnostics] {
         return nodes.map { node in
-            let rt = node.box.state
+            let rt = node.rt
             return NodeDiagnostics(
                 latencySamples: node.latencySamples,
                 nanStrikes: rt.pointee.nanStrikes,

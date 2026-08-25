@@ -48,6 +48,9 @@ struct AUChainPanelModel {
     var onOpenWindow: (UUID) -> Void = { _ in }
     var onUseDefaultChain: () -> Void = {}
     var onRemoveAll: () -> Void = {}
+    /// Writes this app's chain into the default chain. The only way to build the
+    /// default from the UI — without it the default is write-only.
+    var onSaveAsDefault: () -> Void = {}
 }
 
 // MARK: - Panel
@@ -144,15 +147,13 @@ struct AUChainPanelView: View {
         Menu {
             if !model.isDefaultChain {
                 Button("Use Default Chain") { model.onUseDefaultChain() }
+                Button("Save as Default Chain") { model.onSaveAsDefault() }
             }
-            // On the default chain this edits the default itself, so it is not a
-            // fork (§5.2 item 1); undo is re-adding.
+            // Forks like every other structural edit (§4): on a default-following
+            // app this gives THIS app an explicitly-empty chain and leaves every
+            // other app's default alone. `Use Default Chain` is the undo.
             Button("Remove All Effects") {
-                if model.isDefaultChain {
-                    model.onRemoveAll()
-                } else {
-                    structuralEdit { model.onRemoveAll() }
-                }
+                structuralEdit { model.onRemoveAll() }
             }
         } label: {
             Image(systemName: "ellipsis.circle")

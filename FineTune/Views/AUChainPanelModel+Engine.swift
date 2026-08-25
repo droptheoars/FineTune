@@ -102,14 +102,18 @@ extension MenuBarPopupView {
                 engine.resetAUChainToDefault(for: persistenceID)
             },
             onRemoveAll: {
-                // On an app that follows the default this menu item edits the
-                // DEFAULT chain itself (§5.2 item 1) — it is the one structural
-                // edit that does not fork. Every other edit forks (§4).
-                if followsDefault {
-                    manager.setDefaultChain(AUChainConfig(plugins: []))
-                } else {
-                    engine.editableAUChain(for: persistenceID, appName: appName).removeAll()
-                }
+                // Structural, so it forks like the rest (§4): a default-following
+                // app gets its own explicitly-empty chain (presence with no
+                // plugins), and nobody else's chain moves.
+                engine.editableAUChain(for: persistenceID, appName: appName).removeAll()
+            },
+            onSaveAsDefault: {
+                // Read at click time, not from the render-time snapshot. Falls back
+                // to the persisted config for an app with no live chain.
+                let plugins = manager.chain(for: persistenceID)?.slots.map(\.config)
+                    ?? engine.settingsManager.getAUChain(for: persistenceID)?.plugins
+                    ?? []
+                manager.setDefaultChain(AUChainConfig(plugins: plugins))
             }
         )
     }
