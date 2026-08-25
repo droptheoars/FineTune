@@ -153,15 +153,8 @@ extension MenuBarPopupView {
         switch slot.state {
         case .instantiating, .configuring, .allocating:
             return .instantiating
-        case .failed(.missing):
-            return .missing
-        case .failed(.formatRefused), .failed(.allocFailed), .failed(.hung), .failed(.stateRestore):
-            // §5.2 pins badges only for "not installed", "not responding",
-            // restore-failed, invalid audio and speed. A plugin that is present
-            // but refused its format or failed to allocate did not come up:
-            // "Not responding" is the pinned copy that fits without claiming the
-            // plugin is absent.
-            return .hung
+        case .failed(let reason):
+            return .forFailure(reason)
         case .ready:
             if slot.showsSpeedBadge { return .rateMismatch }
             return slot.stateRestoreFailed ? .stateRestoreFailed : .ready

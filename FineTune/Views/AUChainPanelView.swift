@@ -15,10 +15,61 @@ enum AUSlotStatus: Equatable {
     case instantiating
     case ready
     case missing
+    /// A plugin that IS installed but failed somewhere in bring-up (format
+    /// refused, alloc failed, hung, or a restore-reserved reason). Distinct
+    /// from `.missing` so Hardened Runtime / load failures don't send the
+    /// user chasing a reinstall that won't fix anything (T1).
+    case couldNotLoad(AppAUChain.FailureReason)
     case stateRestoreFailed
-    case hung
     case nanDisabled
     case rateMismatch
+}
+
+extension AUSlotStatus {
+    /// Maps a lifecycle failure straight to its badge (§5.2, T1). `.missing`
+    /// is the only reason that reads "not installed" — everything else is a
+    /// plugin that exists but couldn't be hosted, and reads "Couldn't load"
+    /// with the reason in its tooltip. A ternary (not an exhaustive switch)
+    /// on purpose: a future `FailureReason` case falls safely into
+    /// `.couldNotLoad` without this needing to change.
+    static func forFailure(_ reason: AppAUChain.FailureReason) -> AUSlotStatus {
+        reason == .missing ? .missing : .couldNotLoad(reason)
+    }
+
+    /// Icon + text for the simple text badges. `nil` for statuses rendered
+    /// with a bespoke view (`.ready`, `.instantiating`, `.rateMismatch`).
+    var badgeCopy: (icon: String?, text: String)? {
+        switch self {
+        case .ready, .instantiating, .rateMismatch:
+            return nil
+        case .missing:
+            return ("exclamationmark.triangle", "Not installed")
+        case .couldNotLoad:
+            return (nil, "Couldn't load")
+        case .stateRestoreFailed:
+            return (nil, "Settings couldn't be restored")
+        case .nanDisabled:
+            return (nil, "Disabled: produced invalid audio")
+        }
+    }
+
+    /// The specific reason behind a `.couldNotLoad` badge, surfaced in its
+    /// tooltip (T1) — every other badge's text is already the whole story.
+    var badgeTooltip: String? {
+        guard case .couldNotLoad(let reason) = self else { return nil }
+        switch reason {
+        case .missing:
+            return nil // unreachable: .missing always maps to .missing, not .couldNotLoad
+        case .formatRefused:
+            return "This plugin refused the audio format FineTune uses."
+        case .stateRestore:
+            return "This plugin's saved settings could not be restored."
+        case .allocFailed:
+            return "This plugin failed to start up."
+        case .hung:
+            return "This plugin stopped responding while starting up."
+        }
+    }
 }
 
 /// One plugin row's view state. Plain data — no audio types, no manager refs.
@@ -225,26 +276,25 @@ struct AUChainPanelView: View {
     @ViewBuilder
     private func badge(for status: AUSlotStatus) -> some View {
         switch status {
-        case .ready:
-            EmptyView()
         case .instantiating:
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.6)
                 .frame(width: DesignTokens.Dimensions.iconSizeSmall)
-        case .missing:
-            badgeLabel(icon: "exclamationmark.triangle", text: "Not installed")
-        case .stateRestoreFailed:
-            badgeLabel(icon: nil, text: "Settings couldn't be restored")
-        case .hung:
-            badgeLabel(icon: nil, text: "Not responding")
-        case .nanDisabled:
-            badgeLabel(icon: nil, text: "Disabled: produced invalid audio")
         case .rateMismatch:
             Image(systemName: "speedometer")
                 .font(.system(size: 10))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .help("This plugin changes playback speed. Full speed control arrives with the recorder (Phase 2); at other speeds audio will glitch.")
+        default:
+            if let copy = status.badgeCopy {
+                let label = badgeLabel(icon: copy.icon, text: copy.text)
+                if let tooltip = status.badgeTooltip {
+                    label.help(tooltip)
+                } else {
+                    label
+                }
+            }
         }
     }
 
@@ -369,7 +419,7 @@ private func previewSlot(
                     previewSlot("Healthy Plugin", "Acme", status: .ready),
                     previewSlot("Missing Plugin", "Acme", status: .missing),
                     previewSlot("Restore Failed", "Acme", status: .stateRestoreFailed),
-                    previewSlot("Wedged Plugin", "Acme", status: .hung),
+                    previewSlot("Wedged Plugin", "Acme", status: .couldNotLoad(.hung)),
                     previewSlot("Bad Audio", "Acme", status: .nanDisabled),
                     previewSlot("TimePitch", "Apple", status: .rateMismatch)
                 ]
