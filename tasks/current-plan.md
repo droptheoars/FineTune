@@ -6,7 +6,10 @@
 Spotify after the c1b331f entitlement fix). Branch origin/feat/au-plugin-hosting at c1b331f.
 PR not opened yet — one-click link + body in tasks/PR-BODY.md. Full listening checklist
 (tasks/MANUAL-TEST-CHECKLIST.md) only partially run; device-switch test (test 5) still
-unheard by human ears. Next: Phase 2 spec session (see tasks/NEXT-SESSION-PROMPT.md).
+unheard by human ears. **Phase 2 spec is WRITTEN and awaiting Erik's review**:
+tasks/specs/2026-08-25-phase2-tape-transport.md (Fable xhigh, 2026-08-25). No Phase 2 code
+started. Next actions are Erik's: hear checklist tests 5+7, decide on opening the Phase 1 PR,
+then the transport-UI decision mockup loop.
 
 **Phase 1 launch findings (2026-08-25 evening)**
 - Hardened Runtime library validation blocked ALL third-party AUs (badge showed 'Not installed').
@@ -56,13 +59,35 @@ and Phase 2's ring buffer then records pre-correction audio so replays adapt to 
 - Crash risk: plugins run in-process (accepted; CrashGuard cleans up aggregates). Same deal as every DAW.
 - Day-one payoff: RC-20 / Wavesfactory Cassette on any app = tape character without building it.
 
-### Phase 2 — Ring buffer + tape transport
-Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
-- I1 Rewind live audio (OB-4 style) — scrub into the past, catch up to live
-- I2 Tape mode — varispeed read head, pitch follows speed; tape stop/brake; real-time music slowdown
-- I3 Retro-record — "save the last N minutes" after the fact (relates to improv-capture idea)
+### Phase 2 — Ring buffer + tape transport [SPEC WRITTEN — awaiting Erik's review]
+Spec: `tasks/specs/2026-08-25-phase2-tape-transport.md` (Fable xhigh, 2026-08-25).
+Per-app ring buffer (opt-in, default off; 23/115/346 MB for 1/5/15 min at 48kHz) enabling:
+- I1 Rewind live audio (OB-4 style) — scrub into the past, explicit LIVE return
+- I2 Tape mode — varispeed read head (pitch follows speed); tape stop/brake
+- I3 Retro-record — export last N minutes to WAV in ~/Music/FineTune
 - I10 Loop grab — mark + loop a chunk, OP-1 style
-- Transport UI (scrub bar on app row) — decision mockup needed (design lane, novel surface)
+- Transport UI — BLOCKED on Fable decision mockup with Erik (§5 of the spec has the brief)
+
+Key rulings Erik must sign off:
+- **Q7 gate**: checklist tests 5 (device switch) + 7 (regression) must be HEARD before the RT
+  integration task (T5) merges. Non-RT tasks may start meanwhile. Sharpened from Erik's lean.
+- **Branch (G)**: new `feat/tape-transport` off `feat/au-plugin-hosting`; open the Phase 1 PR
+  first so it stays a reviewable unit.
+- **E22**: a device switch that changes SAMPLE RATE (A2DP↔SCO) discards the tape and snaps to
+  live. No resampling of hundreds of MB, no mixed-rate ring.
+- **E18 horizon collision**: when playback falls off the end of the tape, effective rate snaps
+  to 1.0 pinned at the oldest audio (audible pitch snap) rather than garbling or force-jumping
+  to live. Requested rate restores when the user seeks forward.
+- **Opt-in cost**: retro-record can only save what was already recording. No "save the last 5
+  minutes" for an app whose tape was off.
+- **E28**: the Speed group (TimePitch/Varispeed) is retired from the plugin picker in Phase 2 —
+  the transport fulfils its promise. Existing persisted slots keep Phase 1 behaviour.
+- **Clock**: Q40.24 fixed point (not Double, not Q32.32 — the latter overflows at 12.4h).
+- **Zero added latency at live is structural**: pinned-live writes to the ring and returns
+  without touching the buffer.
+- Phase 1 debt **T1**: the 'Not installed' vs 'Couldn't load' badge split is in Phase 2 scope.
+Build order T0-T10 with tiers and gates is in the spec. HEAR-IT-EARLY checkpoint hangs off T5
+(rewind Spotify 10s via debug URL scheme, before T6/T7/T9 proceed).
 
 ### Phase 3 — Fun DSP + glue (independent items, any order)
 - I4 Karaoke / vocal remover — mid/side center cancel (~40 lines)
@@ -80,6 +105,12 @@ Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
 - True master-bus restructure: rejected for v1 (per-tap architecture has no mix point; revisit only if a master compressor becomes a real need).
 - Built-in tape character emulation: rejected — RC-20/Cassette via AU chain do it better.
 - Generative ambient synth (OB-4 meditate literal clone): rejected — different project.
+
+## Phase 2 open decisions for Erik
+- D3: Accept the Q7 gate (hear tests 5+7 before T5 merges)?
+- D4: Open the Phase 1 PR now (body in tasks/PR-BODY.md, SHA needs refresh)?
+- D5: Accept E22 (rate-change device switch clears the tape)?
+- D6: When to run the transport-UI decision mockup loop (blocks all UI work).
 
 ## Model ladder for this project
 - Spec/architecture: Fable xhigh (RT callback + third-party code in-process = silent-wrong territory)
@@ -176,3 +207,16 @@ whenever the developer had a fullscreen app in front. Made the check injectable 
 
 **Phase 2 seam is intact**: `render(interleavedStereo:frameCount:)` reads nothing from tap state,
 and the insert point (post-EQ, pre-AutoEQ) is exactly where the ring write and transport read split.
+
+---
+
+## Session log addendum (2026-08-25, Phase 2 spec session)
+- Fable xhigh architecture pass produced the Phase 2 spec. No code written, no branch cut.
+- Findings while diagnosing Erik's popup during the session:
+  - `settings.json` still reads `version: 12` even though the code defaults to 13 — the field is
+    decoded from disk and re-encoded unchanged, so schema bumps never land in the file. Cosmetic
+    today (AU chain data writes fine) but it keeps the downgrade hazard live. Fold a forced
+    `version = 14` write into Phase 2's T2.
+  - Erik reported the Effects panel missing while Spotify was playing but the popup showed
+    'No apps playing audio'. Not diagnosed — he dropped it. If it recurs, suspect the process
+    monitor / audio-recording permission for the dev build identity, not the AU chain layer.
