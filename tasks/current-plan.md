@@ -2,7 +2,9 @@
 
 **Fork**: github.com/droptheoars/FineTune (upstream: ronitsingh10/FineTune, GPL-3.0)
 **Local**: ~/Code/Personal/FineTune
-**Status**: Phase 1 spec COMPLETE (Fable, 2026-08-25) → tasks/specs/2026-08-25-phase1-au-hosting.md. Awaiting Erik's spec review before build.
+**Status**: Phase 1 BUILT (2026-08-25). All 9 tasks committed, full suite green, adversarial RT
+review done and its Critical fixed. Awaiting Erik's manual listening pass:
+tasks/MANUAL-TEST-CHECKLIST.md · build at ~/Desktop/FineTune-AU.app
 
 ## License note
 GPL-3.0. Private use: no obligations. Distributing builds to others: source must be public under GPL.
@@ -12,7 +14,7 @@ GPL-3.0. Private use: no obligations. Distributing builds to others: source must
 
 ## Roadmap (approved)
 
-### Phase 1 — AU plugin hosting (the spine) [SPEC IN PROGRESS]
+### Phase 1 — AU plugin hosting (the spine) [BUILT — awaiting manual listening pass]
 Decisions (Erik, 2026-08-25): app chain REPLACES default (never stacks). UI lives in the
 expanded app row next to the EQ panel. Build is for Erik only for now (Iris may test;
 future public release open — keep GPL hygiene, no notarization pipeline yet).
@@ -101,7 +103,7 @@ Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
 - [x] T5 effects panel UI (Sonnet) — 940c8be
 - [x] T6 plugin picker (Sonnet) — 940c8be, curated group applied
 - [x] T7 plugin window controller (Opus) — 1f94839
-- [ ] T8 end-to-end wiring (Opus) — built, gate green, report outstanding
+- [x] T8 end-to-end wiring (Opus) — 0d48abe
 - [x] T9 Fable adversarial review — DONE. 1 Critical, 2 Important, 6 nits.
 
 **T9 review outcome (2026-08-25)**
@@ -146,3 +148,17 @@ Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
 - D1: `ModeToggle` is hard-bound to `DeviceSelectionMode`. T5 may generalize it ONLY if no
   existing call site changes; otherwise a local segmented control in the new panel file,
   visually identical. Spec §5.1's intent is visual consistency, not literal reuse.
+
+**All review findings closed (94565b5)**
+- F1 Critical fixed + `AppAUChainRateRebuildTests/rebuildNeverPublishesDeallocatedUnits` (was red
+  against the unfixed code, green after).
+- F3 closed by 5 `AUChainCallbackScopeTests` covering every E1 once-per-callback case.
+- F2 resolved. O1/O2 design hole closed: `Remove All Effects` on a default-following app now forks
+  to an explicitly-empty chain instead of wiping the shared default, and `Save as Default Chain`
+  makes the default buildable from the UI (new copy, Erik-authorized).
+
+**Also fixed en route**: `HUDWindowControllerTimerTests` was non-hermetic upstream — it bailed
+whenever the developer had a fullscreen app in front. Made the check injectable (1aaa413).
+
+**Phase 2 seam is intact**: `render(interleavedStereo:frameCount:)` reads nothing from tap state,
+and the insert point (post-EQ, pre-AutoEQ) is exactly where the ring write and transport read split.
