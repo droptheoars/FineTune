@@ -74,16 +74,25 @@ anyone. That is what you are for.
 *Proves one default drives per-app instances and survives a device switch with plugin state intact.
 **This is the test that was broken until the review caught it.***
 
-21. Set up one app with a single **Apple AUDelay** (its effect is unmistakable across a switch).
-22. Open the row's **`ellipsis.circle`** menu → **Save as Default Chain**.
-23. Play two apps that have no custom chain. Both Effects tabs show `Default chain` with AUDelay,
-    and both are audibly delayed — each by its **own** instance.
+21. Take an app you already gave a chain (Spotify with RC-20 from test 1). Add **Apple AUDelay**
+    to it as well and set an obvious delay time in its window — its effect is unmistakable across a
+    device switch, which is what step 23 tests.
+22. Open that row's **`ellipsis.circle`** menu → **Save as Default Chain**. Nothing visibly changes
+    here: Spotify keeps its own chain and still reads `Custom chain`.
+23. Now play a **different** app with no custom chain (a browser tab). Its Effects tab should read
+    `Default chain`, list RC-20 + AUDelay, and you should hear both. It is running its **own**
+    instances, not sharing Spotify's.
 24. Switch output **built-in → Bluetooth headphones**. Expect a brief dry window (roughly a third of
     a second), then the delay resumes **with its tail carrying through**, not restarting.
-    *Before the fix, this went silent instead and could falsely disable a healthy plugin.*
+    *This is the bug the review caught: before the fix it went silent instead, and could falsely
+    disable a healthy plugin.*
 25. Switch back **Bluetooth → built-in**. Same expectation.
-26. Remove the plugin on one of the two apps. That app forks to `Custom chain`; **the other app keeps
-    AUDelay and keeps processing**. If both go empty, the fork rule is broken.
+26. On the browser (the default-following app), choose **Remove All Effects**. Expect: that app loses
+    its effects and flips to `Custom chain` with the fork note. **Spotify must be unaffected**, and any
+    third default-following app must still hear RC-20 + AUDelay.
+27. Then choose **Use Default Chain** on the browser — the default comes back and it plays through
+    RC-20 + AUDelay again. That round trip is the fix for the destroy-everything menu: the destructive
+    action is scoped to one app, and it is undoable.
 
 ## 6. Failure drill
 *Proves a missing plugin degrades politely and its settings survive.*
