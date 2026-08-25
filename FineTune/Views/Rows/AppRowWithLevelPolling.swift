@@ -35,8 +35,14 @@ struct AppRowWithLevelPolling: View {
     let onEQToggle: () -> Void
     let isFocused: Bool
     let auChain: AUChainPanelModel
+    /// Reads the app's live transport state (spec §9). Rebuilt on the level
+    /// timer's tick rather than on a timer of its own: the strip's playhead and
+    /// the VU meter want the same 30 Hz, and the RT-written fields it reads
+    /// (position, live/behind, horizon) are not observable any other way.
+    let makeTape: () -> TapeTransportPanelModel
 
     @State private var displayLevel: Float = 0
+    @State private var tape = TapeTransportPanelModel()
     @State private var levelTimer: Timer?
 
     init(
@@ -71,7 +77,8 @@ struct AppRowWithLevelPolling: View {
         isEQExpanded: Bool = false,
         onEQToggle: @escaping () -> Void = {},
         isFocused: Bool = false,
-        auChain: AUChainPanelModel = AUChainPanelModel()
+        auChain: AUChainPanelModel = AUChainPanelModel(),
+        makeTape: @escaping () -> TapeTransportPanelModel = { TapeTransportPanelModel() }
     ) {
         self.app = app
         self.volume = volume
@@ -105,6 +112,7 @@ struct AppRowWithLevelPolling: View {
         self.onEQToggle = onEQToggle
         self.isFocused = isFocused
         self.auChain = auChain
+        self.makeTape = makeTape
     }
 
     var body: some View {
@@ -139,9 +147,12 @@ struct AppRowWithLevelPolling: View {
             isEQExpanded: isEQExpanded,
             onEQToggle: onEQToggle,
             isFocused: isFocused,
-            auChain: auChain
+            auChain: auChain,
+            tape: tape
         )
         .onAppear {
+            // After the render, never during it.
+            tape = makeTape()
             if isPopupVisible {
                 startLevelPolling()
             }
@@ -169,6 +180,7 @@ struct AppRowWithLevelPolling: View {
         ) { _ in
             MainActor.assumeIsolated {
                 displayLevel = getAudioLevel()
+                tape = makeTape()
             }
         }
     }

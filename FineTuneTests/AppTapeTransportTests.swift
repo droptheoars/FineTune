@@ -469,6 +469,7 @@ struct AppTapeTransportExportTests {
             log.record(.exportBegan)
             while !gate.isOpen { try? await Task.sleep(nanoseconds: 1_000_000) }
             log.record(.exportEnded)
+            return true
         }
 
         transport.attach(to: host, sampleRate: testRate)
@@ -508,7 +509,7 @@ struct AppTapeTransportExportTests {
         await transport.waitForPendingWork()
         #expect(!transport.export(lastMinutes: 1), "no exporter wired")
 
-        transport.onExport = { _, _, _, _ in }
+        transport.onExport = { _, _, _, _ in true }
         #expect(!transport.export(lastMinutes: 1), "nothing recorded yet")
     }
 }

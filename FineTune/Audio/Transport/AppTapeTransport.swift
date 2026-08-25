@@ -77,18 +77,47 @@ final class AppTapeTransport {
     /// seek, LIVE, loop) which callers invoke directly — see the header.
     private(set) var transport: TapeTransportRT?
 
+    // MARK: - Transport state the UI reads back (not persisted)
+    //
+    // The RT object takes commands but hands nothing back except diagnostics, so
+    // "what did the user ask for" lives here: it survives the tap churn the ring
+    // survives, and it is re-applied to a ring rebuilt by a rate change. None of
+    // it is persisted — §3-I persists intent (armed, length, keep-pitch) only, so
+    // a fresh tape always starts at normal speed, unbraked, with no loop.
+
+    /// Requested tape speed; 1.0 = normal. Live passthrough ignores it, which is
+    /// why setting it while live is silent until the next rewind.
+    private(set) var rate: Double = 1.0
+    /// Tape brake engaged (§2.5): the effective rate is ramping to, or sitting
+    /// at, zero. Play releases it back to `rate`.
+    private(set) var isBraked = false
+    /// Loop region in ABSOLUTE write-clock frames, so it stays put on the tape
+    /// while live runs away from it. `nil` = no loop.
+    private(set) var loopFrames: (start: Int64, end: Int64)?
+    /// Where the in-progress scrub last asked to be, so the release can decide
+    /// to snap to live without racing the RT thread's command consumption (§6).
+    private(set) var pendingScrubSecondsBehind: Double?
+    /// When a device rate change last discarded the tape (E22) — drives the
+    /// view's "Tape restarted" notice.
+    private(set) var lastClearedAt: Date?
+    private(set) var isExporting = false
+    /// When a save last actually wrote a file. A failed save leaves this alone.
+    private(set) var lastExportCompletedAt: Date?
+
     /// Manager hook: config changed and should be persisted (§3-I).
     var onPersist: @MainActor (TapeTransportConfig) -> Void = { _ in }
 
     /// T6 seam. The exporter copies the window out on its own queue while this
     /// call is awaited; the awaiting Task holds a strong reference to the
     /// transport for the whole duration, which IS the export refcount (§2.6).
+    /// Returns whether a file actually landed, so the UI's tick is a fact
+    /// rather than "the attempt finished".
     var onExport: (@MainActor (
         _ transport: TapeTransportRT,
         _ endFrame: Int64,
         _ frameCount: Int,
         _ appName: String
-    ) async -> Void)?
+    ) async -> Bool)?
 
     private weak var host: TapeTransportHosting?
     private let queue: DispatchQueue
@@ -184,6 +213,9 @@ final class AppTapeTransport {
             }
             self.transport = built
             self.state = .ready
+            // A ring rebuilt under the user (device switch, resize) inherits the
+            // speed they set; the tape itself is gone, their settings are not.
+            built?.setTargetRate(Float(self.rate))
             self.host?.setTransport(built)
         }
     }
@@ -195,6 +227,12 @@ final class AppTapeTransport {
         state = .disabled
         let released = transport
         transport = nil
+        // The loop is absolute frames on a write clock that is about to restart
+        // from zero, and a brake on a ring nobody is playing is meaningless.
+        // Both would otherwise be re-applied to the next ring as garbage.
+        loopFrames = nil
+        pendingScrubSecondsBehind = nil
+        isBraked = false
         // 1. The tap must stop seeing the ring before anything frees it.
         host?.setTransport(nil)
         guard let released else { return }
@@ -210,6 +248,9 @@ final class AppTapeTransport {
         sampleRate = newRate
         guard config.isEnabled else { return }
         logger.debug("Tape cleared for \(self.identifier, privacy: .public) — device rate changed")
+        // Stamped only when a tape was actually armed: the notice tells the user
+        // their recording is gone, and there is nothing to say if there was none.
+        lastClearedAt = Date()
         enable(rate: newRate)
     }
 
@@ -258,6 +299,106 @@ final class AppTapeTransport {
         onPersist(config)
     }
 
+    // MARK: - Transport commands (the strip's buttons land here)
+    //
+    // Every one of these is an aligned atomic store onto the published ring, NOT
+    // a lifecycle event (see the header): none of them reallocates, and all of
+    // them no-op safely while the ring is absent or still allocating.
+
+    func setRate(_ newRate: Double) {
+        rate = newRate
+        guard !isBraked else { return }  // play will apply it
+        transport?.setTargetRate(Float(newRate))
+    }
+
+    /// Tape brake / play. Braking rides the 0.8 s brake ramp; play returns to the
+    /// requested rate through the ordinary one.
+    func setBraked(_ braked: Bool) {
+        isBraked = braked
+        if braked {
+            transport?.setTargetRate(0, rampSeconds: TapeTransportRT.brakeRampSeconds)
+        } else {
+            transport?.setTargetRate(Float(rate))
+        }
+    }
+
+    /// Scrub to a point behind live. The RT thread clamps the target into the
+    /// valid window, so an over-long drag lands on the oldest audio rather than
+    /// failing.
+    func scrub(toSecondsBehindLive seconds: Double) {
+        guard let transport else { return }
+        let behind = max(0, seconds)
+        pendingScrubSecondsBehind = behind
+        transport.requestSeek(toFrame: max(0, transport.writtenFrames - Int64((behind * transport.sampleRate).rounded())))
+    }
+
+    /// Scrub release: a drag that ended within `threshold` of live returns to
+    /// live rather than leaving the user a fraction of a second behind it (§6).
+    func endScrub(snapToLiveWithin threshold: Double) {
+        let pending = pendingScrubSecondsBehind
+        pendingScrubSecondsBehind = nil
+        guard let pending, pending < threshold else { return }
+        goLive()
+    }
+
+    /// LIVE. Releases the brake too: a stopped tape that is back at live is
+    /// playing, and must not keep reporting itself stopped.
+    func goLive() {
+        if isBraked { setBraked(false) }
+        transport?.requestLive()
+    }
+
+    /// Loop the last `seconds` of tape and drop the read head at its start, so
+    /// the button loops something audible instead of arming a region live
+    /// passthrough never reaches.
+    func grabLoop(lastSeconds: Double) {
+        guard let transport else { return }
+        let end = max(0, transport.writtenFrames - 4)
+        let start = max(0, end - Int64((lastSeconds * transport.sampleRate).rounded()))
+        guard end > start else { return }
+        loopFrames = (start: start, end: end)
+        transport.setLoop(startFrame: start, endFrame: end)
+        transport.requestSeek(toFrame: start)
+    }
+
+    func clearLoop() {
+        loopFrames = nil
+        transport?.clearLoop()
+    }
+
+    /// Drags one loop handle. The minimum length is held by pushing the OTHER
+    /// edge, never the one under the user's finger — matching what the scrub
+    /// bar draws while the drag is in flight.
+    func setLoopEdge(isStart: Bool, secondsBehindLive seconds: Double, minimumLength: Double) {
+        guard let transport, let existing = loopFrames else { return }
+        let written = transport.writtenFrames
+        let minimum = max(Int64((minimumLength * transport.sampleRate).rounded()), 1)
+        let frame = max(0, written - Int64((max(0, seconds) * transport.sampleRate).rounded()))
+        var start = existing.start
+        var end = existing.end
+        if isStart {
+            start = min(frame, max(0, written - minimum))
+            end = max(end, start + minimum)
+        } else {
+            end = max(frame, minimum)
+            start = max(0, min(start, end - minimum))
+            end = max(end, start + minimum)
+        }
+        loopFrames = (start: start, end: end)
+        transport.setLoop(startFrame: start, endFrame: end)
+    }
+
+    /// The loop region expressed as seconds behind live, for the scrub bar. It
+    /// drifts leftward as live runs on, which is exactly what a real tape does.
+    func loopSecondsBehindLive() -> (startBehind: Double, endBehind: Double)? {
+        guard let loopFrames, let transport else { return nil }
+        let written = transport.writtenFrames
+        return (
+            startBehind: max(0, Double(written - loopFrames.start) / transport.sampleRate),
+            endBehind: max(0, Double(written - loopFrames.end) / transport.sampleRate)
+        )
+    }
+
     // MARK: - Retro-record (§3-Q5, the T6 seam)
 
     /// Snapshots the write position and hands the ring to the exporter. Returns
@@ -274,11 +415,14 @@ final class AppTapeTransport {
         let frameCount = min(requested, min(reachable, Int(clamping: endFrame)))
         guard frameCount > 0 else { return false }
         let name = appName
+        isExporting = true
         track {
             // `transport` is captured strongly for the whole call: this is the
             // export refcount (§2.6). A disable during the copy drops only the
             // reference this class holds; the ring survives until we let go.
-            await onExport(transport, endFrame, frameCount, name)
+            let wrote = await onExport(transport, endFrame, frameCount, name)
+            self.isExporting = false
+            if wrote { self.lastExportCompletedAt = Date() }
         }
         return true
     }

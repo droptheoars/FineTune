@@ -924,7 +924,9 @@ struct MenuBarPopupView: View {
                     toggleEQ(for: displayableApp.id, scrollProxy: scrollProxy)
                 },
                 isFocused: hasKeyboardEngaged && selectedRow == .app(persistenceID: displayableApp.id),
-                auChain: auChainModel(for: displayableApp.id, appName: displayableApp.displayName)
+                auChain: auChainModel(for: displayableApp.id, appName: displayableApp.displayName),
+                // Called from the row's level timer, i.e. after every render.
+                makeTape: { tapeModel(for: displayableApp.id, appName: displayableApp.displayName) }
             )
             .id(PopupKeyboardNavModel.RowID.app(persistenceID: displayableApp.id))
         }

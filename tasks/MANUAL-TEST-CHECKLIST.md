@@ -132,3 +132,139 @@ anyone. That is what you are for.
 For any failure: which step, what you expected, what you heard, and whether the badge/UI said
 anything. If audio breaks in a way that sounds like a *dropout or click* rather than a wrong effect,
 say so explicitly — that points at the realtime path rather than the wiring.
+
+---
+
+# Phase 2 manual listening checklist — the tape transport
+
+**Build**: rebuild `~/Desktop/FineTune-AU.app` from `feat/au-plugin-hosting` after T9.
+**Gate**: 912 automated tests green (18 of them the transport wiring added in T9).
+
+Same warning as Phase 1, and it matters more here: **nothing below has been heard by anyone.**
+The tape has been proven offline against synthesized signals and a real ring buffer. Whether a
+rewind sounds like a rewind is a question only your ears can answer.
+
+The tape is **off by default and per app**. Arm it in the expanded row under **Tape**. It records
+into memory only, never to disk, and turning it off throws the recording away.
+
+---
+
+## HEAR IT EARLY (five minutes, do this first)
+
+*If any of these three fails, stop and tell me. Everything after them assumes they work.*
+
+35. Play Spotify, expand its row, click **Tape**, turn the **Tape** switch on. Expect: a transport
+    strip appears under the row header (visible collapsed too), the time slot starts counting up
+    from `0:00`, and `LIVE` sits there as plain grey text, not a button.
+36. Let it record 30 seconds, then drag the scrub thumb left by roughly a third of the bar.
+    Expect: audio jumps back to what you heard ten-ish seconds ago, **without a click**, the time
+    slot flips to an amber `−0:10`, and `LIVE` becomes a coloured button.
+37. Press **LIVE**. Expect: you are back at present-time audio through a short crossfade, again
+    **without a click or a gap**, and the slot goes back to counting recorded time.
+
+---
+
+## 9. Rewind and scrub
+*Proves the ring, the read head, and the jump crossfade.*
+
+38. With about a minute recorded, drag back 30 seconds and listen for a while. Expect: the right
+    content, and quality **identical** to live. Any graininess, pitch wobble, or metallic edge
+    is a bug, not a tape effect.
+39. Drag the thumb all the way to the left. Expect: it stops at the oldest audio the tape still
+    holds and keeps playing. It must never go silent or start clicking.
+40. Drag to just short of the right end and release. Expect: it snaps back to `LIVE` rather than
+    leaving you half a second behind.
+
+## 10. Brake and speed
+*Proves the rate ramp, which is the part most likely to sound wrong rather than broken.*
+
+41. While rewound, press the **stop** button. Expect a **tape brake**: over about a second the
+    audio slows and its pitch falls away to silence, like a deck spinning down. The amber
+    `Stopped` chip appears the moment you press, while the ramp is still running (by design).
+42. Press **play**. Expect it spins back up to speed, again over a ramp, not a hard cut.
+43. Open **Tape** and set **Speed** to `0.5×`. Expect: half speed, pitch an octave down, and a
+    `0.5×` chip on the strip. It should be smooth, not stuttery: stutter means the read head is
+    skipping and is a hard fail.
+44. Set `2.0×` while behind live. Expect: it fast-forwards, pitch rises, and when it catches up
+    with live it returns to live on its own.
+45. Set a speed while you are **at** live. Expect: nothing audible until you rewind. That is
+    correct, not a broken slider: live is passthrough.
+
+## 11. Loop
+46. Rewind to a chorus, then press the **loop** button. Expect: the last ten seconds are marked on
+    the bar, playback drops to the start of that region and loops it. The wrap point must be
+    **click-free**.
+47. Drag each loop handle. Expect: the region follows your finger, the loop keeps playing, and
+    dragging one handle past the other pushes the other one along instead of crossing it.
+48. Press the loop button again to clear it. Expect: playback carries on forwards from where it
+    was, still behind live.
+
+## 12. Save the tape (retro-record)
+49. Press the **save** icon on the strip (or **Save** in the Tape panel). Expect: a brief spinner,
+    then a tick, then Finder opens on `~/Music/FineTune/` with `Spotify <timestamp>.wav` selected.
+    Open it in QuickTime. It must play the tape's audio, at the right speed and pitch, with no
+    tearing or garbage at either end.
+50. What the file contains is **volume and EQ only**: no plugin chain, no headphone correction, no
+    loudness or limiter. If it sounds unprocessed compared to what you were hearing, that is why.
+51. Press save twice in quick succession. Expect: exactly one file, and no error dialog. Music
+    must keep playing normally throughout the save.
+
+## 13. Device switches with the tape running
+*Proves the tape survives what taps do not. Taps are rebuilt constantly, tapes are not.*
+
+52. Rewind 20 seconds, then, **while it is playing the past**, switch output to another device at
+    the same sample rate (built-in to another wired device). Expect: your position and the whole
+    recording survive the switch. A brief dry window is fine, losing your place is not.
+53. Now switch to **Bluetooth headphones**, which usually change the sample rate. Expect: the tape
+    is **cleared**, a `Tape restarted` note appears for about ten seconds, you are back live, and
+    recording starts over from zero. This is deliberate: recorded audio is in the old rate's time
+    and there is no resampler.
+54. Take or simulate a **phone call** (A2DP to SCO) with the tape armed and rewound. Expect the
+    same clear-and-restart as step 53, no crash, and normal audio when the call ends.
+55. Sleep the Mac with the tape armed, wake it. Expect: FineTune still works, the tape either
+    survives or restarts cleanly, and no dropouts follow.
+56. Rewind, then **pause Spotify entirely**. Expect: the past keeps playing out of FineTune even
+    though the app is silent. This is the whole point of the feature and it has a specific
+    mechanism behind it, so if playback dies when you pause, say so.
+
+## 14. Length and persistence
+57. Change **Tape length** to 1 minute while armed. Expect: the tape clears (the panel says so),
+    and it now holds only a minute.
+58. Set 15 minutes and watch memory in Activity Monitor. Expect roughly 350 MB and then **flat**.
+    Growth over time is a leak and is a hard fail.
+59. Quit FineTune, relaunch, play Spotify. Expect: the tape is still armed, at the same length,
+    and empty. It lives in memory only, so an empty tape after relaunch is correct.
+
+## 15. Regression: the tape must be inaudible when it is not being used
+*The most important test in this file. An armed tape sitting at live is passthrough, so it must be
+impossible to hear.*
+
+60. Arm the tape on Spotify and **leave it at live**. Now re-run Phase 1 steps 31 to 33: EQ per
+    app, AutoEQ, loudness compensation, VU meters, plugin chains, device switching, bypass.
+    Everything must behave exactly as it did in Phase 1.
+61. A/B it: with music playing, toggle the tape off and on a few times. Expect **no** change in
+    level, tone, timing, or stereo image at the switch, and no click. Any audible difference at
+    all means the passthrough path is not bit-exact and I want to know immediately.
+62. Leave the tape armed and idle for ten minutes with music playing. Expect: no drift, no
+    dropouts, CPU unchanged from Phase 1.
+
+---
+
+## Known limitations of the tape (by design, not bugs)
+
+- **Keep pitch** is not built yet. The row is hidden, and speed always moves pitch, like real tape.
+- **Pinned inactive apps have no Tape panel.** An app that is not playing has no tap, so there is
+  nothing to record. Arm the tape once it is playing.
+- **Memory only.** 1 minute is about 23 MB, 5 minutes 115 MB, 15 minutes 346 MB, per armed app.
+  Turning the tape off or changing its length throws the recording away.
+- **The save contains volume and EQ only** (step 50).
+- **The `Stopped` chip leads the sound** by the length of the brake ramp: it appears on press, the
+  audio takes about a second to stop.
+- **The strip only moves while the popup is open.** It updates at the same rate as the VU meters.
+
+## What to tell me
+
+Same as Phase 1, plus one thing specific to the tape: if something sounds wrong, say whether it is
+**a click** (a jump or crossfade problem), **a stutter** (the read head skipping), or **wrong
+pitch or speed** (the rate path). Those three point at different code and the distinction saves a
+whole debugging round.

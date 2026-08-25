@@ -32,6 +32,10 @@ final class AudioEngine {
     /// independent; they only share the tap events that create and re-rate a tap.
     let tapeTransportManager: TapeTransportManager
 
+    /// Writes a tape to WAV on demand (Phase 2 §3-Q5). Stateless between calls
+    /// apart from its single-flight guard, so one instance covers every app.
+    private let tapeExporter = TapeExporter()
+
     /// Factory for creating tap controllers. Overridable for testing.
     private let tapFactory: @MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling
 
@@ -267,6 +271,10 @@ final class AudioEngine {
             guard let self, self.settingsManager.appSettings.lockInputDevice else { return }
             self.restoreLockedInputDevice()
         }
+
+        // Retro-record (Phase 2 §3-Q5). One exporter serves every app: the disk is
+        // the shared resource, so its single-flight guard has to be shared too.
+        tapeTransportManager.onExport = tapeExporter.onExportHandler
 
         // Wire callbacks — needed for both test and production mode
         wireCallbacks()

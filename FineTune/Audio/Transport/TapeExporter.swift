@@ -93,14 +93,16 @@ final class TapeExporter {
     private let queue = DispatchQueue(label: "TapeExporter", qos: .utility)
     private let logger = Logger(subsystem: "com.finetuneapp.FineTune", category: "TapeExport")
 
-    /// The `AppTapeTransport.onExport` seam: same call, failures logged instead
-    /// of thrown (the seam is `async -> Void`).
-    var onExportHandler: @MainActor (TapeTransportRT, Int64, Int, String) async -> Void {
+    /// The `AppTapeTransport.onExport` seam: same call, failures logged rather
+    /// than thrown, and reported as `false` so the UI never shows a tick for a
+    /// file that was refused.
+    var onExportHandler: @MainActor (TapeTransportRT, Int64, Int, String) async -> Bool {
         { [weak self] transport, endFrame, frameCount, appName in
-            guard let self else { return }
-            _ = try? await self.export(
+            guard let self else { return false }
+            let url = try? await self.export(
                 transport, endFrame: endFrame, frameCount: frameCount, appName: appName
             )
+            return url != nil
         }
     }
 

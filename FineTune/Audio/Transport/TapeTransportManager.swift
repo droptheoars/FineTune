@@ -21,7 +21,7 @@ final class TapeTransportManager {
     private var appNames: [String: String] = [:]
 
     /// T6 seam, forwarded to every transport this manager owns (§2.6 export).
-    var onExport: (@MainActor (TapeTransportRT, Int64, Int, String) async -> Void)? {
+    var onExport: (@MainActor (TapeTransportRT, Int64, Int, String) async -> Bool)? {
         didSet {
             for transport in transports.values { transport.onExport = onExport }
         }
