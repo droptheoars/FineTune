@@ -92,23 +92,10 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "SettingsManager")
 
     struct Settings: Codable {
-        /// The schema version this build writes. `encode(to:)` always stamps this value,
-        /// regardless of what version the file was decoded from — a bumped `version`
-        /// constant with no corresponding save was how v13 silently never landed on disk.
+        /// The schema version this build writes. Every decode stamps this value onto
+        /// `version` (see `init(from:)`), so every re-encode carries it too — no manual
+        /// CodingKeys/encode(to:) to keep in sync with the field list by hand.
         static let currentVersion = 14
-
-        // Custom `encode(to:)` below (for the version stamp) disables CodingKeys
-        // synthesis, so this must be kept in sync with the stored properties by hand.
-        enum CodingKeys: String, CodingKey {
-            case version, appVolumes, appDeviceRouting, appMutes, appBoosts, appEQSettings,
-                 appSettings, systemSoundsFollowsDefault, appDeviceSelectionMode, appSelectedDeviceUIDs,
-                 lockedInputDeviceUID, preferredInputDeviceUID, pinnedApps, pinnedAppInfo,
-                 ignoredApps, ignoredAppInfo, ddcVolumes, ddcMuteStates, ddcSavedVolumes,
-                 softwareDeviceVolumes, softwareDeviceMuteStates, softwareDeviceSavedVolumes,
-                 deviceVolumeTierOverride, deviceIconOverrides, outputDevicePriority, inputDevicePriority,
-                 hiddenOutputDeviceUIDs, hiddenInputDeviceUIDs, deviceAutoEQ, favoriteAutoEQProfiles,
-                 autoEQPreampEnabled, userEQPresets, appAUChains, defaultAUChain, appTapeTransport
-        }
 
         var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
@@ -173,7 +160,11 @@ final class SettingsManager {
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 9
+            // The file's own version is deliberately discarded: nothing branches on it
+            // today, so every decode stamps the current schema version and every
+            // subsequent encode carries it forward. A future destructive migration
+            // that needs to know what it's migrating *from* must read it here instead.
+            version = Self.currentVersion
             appVolumes = (try c.decodeIfPresent([String: Float].self, forKey: .appVolumes) ?? [:])
                 .filter { $0.value.isFinite && $0.value >= 0 }
                 .mapValues { min($0, 1.0) }  // Clamp old volumes > 1.0 (boost is now per-app)
@@ -219,49 +210,6 @@ final class SettingsManager {
             appAUChains = try c.decodeIfPresent([String: AUChainConfig].self, forKey: .appAUChains) ?? [:]
             defaultAUChain = try c.decodeIfPresent(AUChainConfig.self, forKey: .defaultAUChain)
             appTapeTransport = try c.decodeIfPresent([String: TapeTransportConfig].self, forKey: .appTapeTransport) ?? [:]
-        }
-
-        // Manual `encode(to:)` — the only reason this exists is to force `version` to
-        // `currentVersion` on every encode regardless of what was decoded (see the
-        // doc comment on `currentVersion`). Everything else mirrors the encoding the
-        // compiler would otherwise synthesize; keep this in sync when adding fields.
-        func encode(to encoder: Encoder) throws {
-            var c = encoder.container(keyedBy: CodingKeys.self)
-            try c.encode(Self.currentVersion, forKey: .version)
-            try c.encode(appVolumes, forKey: .appVolumes)
-            try c.encode(appDeviceRouting, forKey: .appDeviceRouting)
-            try c.encode(appMutes, forKey: .appMutes)
-            try c.encode(appBoosts, forKey: .appBoosts)
-            try c.encode(appEQSettings, forKey: .appEQSettings)
-            try c.encode(appSettings, forKey: .appSettings)
-            try c.encode(systemSoundsFollowsDefault, forKey: .systemSoundsFollowsDefault)
-            try c.encode(appDeviceSelectionMode, forKey: .appDeviceSelectionMode)
-            try c.encode(appSelectedDeviceUIDs, forKey: .appSelectedDeviceUIDs)
-            try c.encodeIfPresent(lockedInputDeviceUID, forKey: .lockedInputDeviceUID)
-            try c.encodeIfPresent(preferredInputDeviceUID, forKey: .preferredInputDeviceUID)
-            try c.encode(pinnedApps, forKey: .pinnedApps)
-            try c.encode(pinnedAppInfo, forKey: .pinnedAppInfo)
-            try c.encode(ignoredApps, forKey: .ignoredApps)
-            try c.encode(ignoredAppInfo, forKey: .ignoredAppInfo)
-            try c.encode(ddcVolumes, forKey: .ddcVolumes)
-            try c.encode(ddcMuteStates, forKey: .ddcMuteStates)
-            try c.encode(ddcSavedVolumes, forKey: .ddcSavedVolumes)
-            try c.encode(softwareDeviceVolumes, forKey: .softwareDeviceVolumes)
-            try c.encode(softwareDeviceMuteStates, forKey: .softwareDeviceMuteStates)
-            try c.encode(softwareDeviceSavedVolumes, forKey: .softwareDeviceSavedVolumes)
-            try c.encode(deviceVolumeTierOverride, forKey: .deviceVolumeTierOverride)
-            try c.encode(deviceIconOverrides, forKey: .deviceIconOverrides)
-            try c.encode(outputDevicePriority, forKey: .outputDevicePriority)
-            try c.encode(inputDevicePriority, forKey: .inputDevicePriority)
-            try c.encode(hiddenOutputDeviceUIDs, forKey: .hiddenOutputDeviceUIDs)
-            try c.encode(hiddenInputDeviceUIDs, forKey: .hiddenInputDeviceUIDs)
-            try c.encode(deviceAutoEQ, forKey: .deviceAutoEQ)
-            try c.encode(favoriteAutoEQProfiles, forKey: .favoriteAutoEQProfiles)
-            try c.encode(autoEQPreampEnabled, forKey: .autoEQPreampEnabled)
-            try c.encode(userEQPresets, forKey: .userEQPresets)
-            try c.encode(appAUChains, forKey: .appAUChains)
-            try c.encodeIfPresent(defaultAUChain, forKey: .defaultAUChain)
-            try c.encode(appTapeTransport, forKey: .appTapeTransport)
         }
     }
 

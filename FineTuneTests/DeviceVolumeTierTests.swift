@@ -316,10 +316,10 @@ struct SettingsMigrationV10toV11Tests {
         let data = Data(v10JsonWithLegacyKey.utf8)
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: data)
 
-        // Version from the JSON is preserved (migration happens on next save via the
-        // struct default of 11). The field we care about is that AppSettings no longer
+        // `version` always stamps to the current schema on decode (nothing branches on
+        // the file's own number). The field we care about is that AppSettings no longer
         // has `softwareDeviceVolumeEnabled`, so decoding doesn't throw.
-        #expect(decoded.version == 10)
+        #expect(decoded.version == SettingsManager.Settings.currentVersion)
         #expect(decoded.deviceVolumeTierOverride.isEmpty == true)
         #expect(decoded.appSettings.lockInputDevice == true)
         #expect(decoded.appSettings.showDeviceDisconnectAlerts == true)
@@ -384,7 +384,7 @@ struct SettingsMigrationV10toV11Tests {
         }
         """#
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: Data(json.utf8))
-        #expect(decoded.version == 11)
+        #expect(decoded.version == SettingsManager.Settings.currentVersion)
         #expect(decoded.deviceVolumeTierOverride["uid-usb-interface"] == .software)
         #expect(decoded.deviceVolumeTierOverride["uid-external-display"] == .ddc)
         #expect(decoded.softwareDeviceVolumes["uid-usb-interface"] == 0.6)

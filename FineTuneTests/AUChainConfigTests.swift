@@ -86,8 +86,9 @@ struct AUChainMigrationTests {
         let data = Data(json.utf8)
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: data)
 
-        // Pre-existing fields still decode correctly.
-        #expect(decoded.version == 12)
+        // Pre-existing fields still decode correctly. `version` always stamps to the
+        // current schema (nothing branches on the file's own number — see Settings.init).
+        #expect(decoded.version == SettingsManager.Settings.currentVersion)
         #expect(decoded.appVolumes["com.test.app"] == 0.75)
 
         // New fields are absent from the payload and must decode to the documented defaults.
