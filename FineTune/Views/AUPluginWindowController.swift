@@ -27,6 +27,11 @@ final class AUPluginWindowController {
     }
 
     private var hosted: [UUID: Hosted] = [:]
+    /// Vended plugin views, kept alive across window closes. An AUv2 bridge hands out its
+    /// Cocoa view once; asking a second time returns nil and we would silently fall back to
+    /// the generic parameter list — so a reopened window must reuse the view it already got.
+    /// Dropped only on teardown (`close(slotID:)` / `closeAll()`), when the AU itself goes away.
+    private var cachedViews: [UUID: NSViewController] = [:]
     private let logger = Logger(subsystem: "com.finetuneapp.FineTune", category: "AUPluginWindow")
 
     /// Open slot IDs — polled for the 60s `fullState` capture timer (§4).
@@ -86,6 +91,11 @@ final class AUPluginWindowController {
         // The completion handler runs on a queue internal to the AU implementation
         // (see AUViewController.h), and may arrive long after the user closed the
         // window — hence the hop to the main actor plus the identity check in embed().
+        if let cached = cachedViews[slotID] {
+            embed(cached, au: audioUnit, slotID: slotID, panel: panel, restoredFrame: restoredFrame)
+            return
+        }
+
         nonisolated(unsafe) let au = audioUnit
         audioUnit.requestViewController { [weak self] viewController in
             Task { @MainActor in
@@ -97,6 +107,8 @@ final class AUPluginWindowController {
     // MARK: - Close
 
     func close(slotID: UUID) {
+        // Teardown route: the AU is going away, so the cached view must go with it.
+        cachedViews.removeValue(forKey: slotID)
         guard let entry = hosted.removeValue(forKey: slotID) else { return }
         NotificationCenter.default.removeObserver(entry.closeObserver)
         entry.panel.contentViewController = nil
@@ -114,8 +126,8 @@ final class AUPluginWindowController {
         guard let entry = hosted[slotID], entry.panel === panel else { return }
         hosted.removeValue(forKey: slotID)
         NotificationCenter.default.removeObserver(entry.closeObserver)
-        // Drop the view controller (and with it the plugin's reference from the UI
-        // side) before the capture, so nothing outlives the window.
+        // Detach the view from the panel but keep it in `cachedViews` — see the note
+        // there: re-requesting it from an AUv2 bridge returns nil.
         panel.contentViewController = nil
         entry.onCaptureState()
     }
@@ -137,6 +149,7 @@ final class AUPluginWindowController {
         let content: NSViewController
         if let viewController {
             content = viewController
+            cachedViews[slotID] = viewController
         } else if let generic = makeGenericViewController(for: au) {
             content = generic
         } else {
