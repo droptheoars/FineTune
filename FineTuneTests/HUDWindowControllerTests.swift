@@ -136,6 +136,9 @@ struct HUDWindowControllerTimerTests {
         let hud = HUDWindowController(settingsManager: settings, mediaKeyStatus: status, popupVisibility: popup)
         // Stub out frame to avoid real NSScreen in tests.
         hud.frameProvider = { NSRect(x: 0, y: 23, width: 1440, height: 877) }
+        // Stub the fullscreen check for the same reason: without it these tests pass or
+        // fail depending on whether the developer has a fullscreen app in front.
+        hud.fullscreenProvider = { false }
         return hud
     }
 

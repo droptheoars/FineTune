@@ -26,6 +26,10 @@ final class HUDWindowController: MediaKeyHUDPresenting {
 
     var hideDelayOverride: Duration?
     var frameProvider: () -> NSRect? = { NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame }
+    /// Injectable for the same reason as `frameProvider`: the real check reads the
+    /// frontmost application's windows, so a test's result would otherwise depend on
+    /// whatever the developer happens to have fullscreen at the time.
+    var fullscreenProvider: (() -> Bool)?
     private(set) var showCallCount: Int = 0
     private(set) var showDidUpdatePanel: Bool = false
 
@@ -74,7 +78,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         showCallCount += 1
         showDidUpdatePanel = false
 
-        guard !isForegroundAppFullscreen() else {
+        guard !(fullscreenProvider?() ?? isForegroundAppFullscreen()) else {
             logger.debug("Skipping HUD show: foreground app is fullscreen")
             return
         }
