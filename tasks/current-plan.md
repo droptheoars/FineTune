@@ -94,15 +94,32 @@ Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
 
 **Task status**
 - [x] T0 baseline
-- [ ] T1 models + persistence (Sonnet) — dispatched
-- [ ] T2 AUChainRenderState (Fable) — dispatched
-- [ ] T3 AppAUChain + AUChainManager (Opus)
-- [ ] T4 RT integration (Opus)
-- [ ] T5 effects panel UI (Sonnet)
-- [ ] T6 plugin picker (Sonnet)
-- [ ] T7 plugin window controller (Opus)
+- [x] T1 models + persistence (Sonnet) — 62c872a, 12 tests green, gate verified from main thread
+- [x] T2 AUChainRenderState (Fable) — 00661ef, 11 RT tests green incl. real AUDelay + AUNewTimePitch@1.0
+- [ ] T3 AppAUChain + AUChainManager (Opus) — running
+- [ ] T4 RT integration (Opus) — running
+- [x] T5 effects panel UI (Sonnet) — 940c8be
+- [x] T6 plugin picker (Sonnet) — 940c8be, curated group applied
+- [x] T7 plugin window controller (Opus) — 1f94839
 - [ ] T8 end-to-end wiring (Opus)
 - [ ] T9 Fable adversarial review of T2+T4 RT diff
+
+**Findings during build (carry into T9's review packet)**
+- F1: Swift's bridged `au.renderBlock` allocates 1 malloc per render (measured vs real AUDelay).
+  T2 extracts the raw block once at build time via KVC + unsafeBitCast. Load-bearing;
+  nobody may "simplify" it back. T9 must scrutinize the bitcast.
+- F2: `au.inputBusses[0].isEnabled = true` is REQUIRED before allocateRenderResources or every
+  render returns -10876 and the chain silently passes no audio while reporting ready.
+  Spec §2.5 patched (46326f6).
+- F3: `render()` false ⇒ caller's buffer bit-for-bit untouched (two entry guards only, no partial
+  state). T4's mirror rule depends on this.
+- F4: unlicensed plugins (soothe3/iLok) throw MODAL alerts at instantiation, not enumeration.
+  Picker is safe to browse; adding such a plugin is the hazard. `auval -a` instantiates
+  everything — never run it on this machine.
+
+**Open decisions for T8**
+- D2: InactiveAppRow (pinned but silent apps) has no EQ|Effects toggle — T5 left it alone since
+  spec §5.1 names AppRow only. Decide whether pinned-inactive apps get an Effects tab.
 
 **Decisions taken during build**
 - D1: `ModeToggle` is hard-bound to `DeviceSelectionMode`. T5 may generalize it ONLY if no
