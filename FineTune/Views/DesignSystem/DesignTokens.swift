@@ -302,6 +302,50 @@ enum DesignTokens {
 
         /// Inactive tile in Classic HUD segment row
         static let hudTileInactive: Color = .primary.opacity(0.2)
+
+        // MARK: Tape Transport (Phase 2)
+
+        /// Unrecorded ring capacity on the scrub track.
+        static let tapeTrackEmpty = dynamicColor(
+            name: "tapeTrackEmpty",
+            light: NSColor.black.withAlphaComponent(0.06),
+            dark: NSColor.white.withAlphaComponent(0.07)
+        )
+
+        /// Recorded tape region on the scrub track.
+        static let tapeTrackRecorded = dynamicColor(
+            name: "tapeTrackRecorded",
+            light: NSColor.black.withAlphaComponent(0.30),
+            dark: NSColor.white.withAlphaComponent(0.30)
+        )
+
+        /// Gap between the playhead and live, drawn over the recorded region.
+        static let tapeBehindFill = dynamicColor(
+            name: "tapeBehindFill",
+            light: NSColor(calibratedRed: 216.0 / 255, green: 160.0 / 255, blue: 10.0 / 255, alpha: 0.45),
+            dark: NSColor(calibratedRed: 242.0 / 255, green: 191.0 / 255, blue: 51.0 / 255, alpha: 0.45)
+        )
+
+        /// Offset text and the Stopped/End-of-tape strip labels.
+        static let tapeBehindText = dynamicColor(
+            name: "tapeBehindText",
+            light: NSColor(calibratedRed: 168.0 / 255, green: 116.0 / 255, blue: 0, alpha: 1.0),
+            dark: NSColor(calibratedRed: 242.0 / 255, green: 191.0 / 255, blue: 51.0 / 255, alpha: 1.0)
+        )
+
+        /// Loop region overlay on the scrub track.
+        static let tapeLoopFill = dynamicColor(
+            name: "tapeLoopFill",
+            light: NSColor.controlAccentColor.withAlphaComponent(0.20),
+            dark: NSColor.controlAccentColor.withAlphaComponent(0.22)
+        )
+
+        /// Live-edge tick and the speed-slider 1.0x detent.
+        static let tapeLiveTick = dynamicColor(
+            name: "tapeLiveTick",
+            light: NSColor.black.withAlphaComponent(0.45),
+            dark: NSColor.white.withAlphaComponent(0.50)
+        )
     }
 
     // MARK: - Typography
@@ -456,6 +500,14 @@ enum DesignTokens {
 
         /// Settings picker width
         static let settingsPickerWidth: CGFloat = 120
+
+        // MARK: Tape Transport (Phase 2)
+
+        /// Scrub track height.
+        static let tapeTrackHeight: CGFloat = 4
+
+        /// Tape strip content height.
+        static let tapeStripHeight: CGFloat = 22
 
     }
 

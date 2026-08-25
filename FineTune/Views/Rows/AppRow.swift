@@ -35,6 +35,7 @@ struct AppRow: View {
     let onEQToggle: () -> Void
     let isFocused: Bool
     let auChain: AUChainPanelModel
+    let tape: TapeTransportPanelModel
 
     @State private var isIconHovered = false
     @State private var localEQSettings: EQSettings
@@ -71,7 +72,8 @@ struct AppRow: View {
         isEQExpanded: Bool = false,
         onEQToggle: @escaping () -> Void = {},
         isFocused: Bool = false,
-        auChain: AUChainPanelModel = AUChainPanelModel()
+        auChain: AUChainPanelModel = AUChainPanelModel(),
+        tape: TapeTransportPanelModel = TapeTransportPanelModel()
     ) {
         self.app = app
         self.volume = volume
@@ -104,14 +106,49 @@ struct AppRow: View {
         self.onEQToggle = onEQToggle
         self.isFocused = isFocused
         self.auChain = auChain
+        self.tape = tape
         // Initialize local EQ state for reactive UI updates
         self._localEQSettings = State(initialValue: eqSettings)
     }
 
     var body: some View {
         ExpandableGlassRow(isExpanded: isEQExpanded, isFocused: isFocused) {
-            // Header: Main row content (always visible)
-            HStack(spacing: DesignTokens.Spacing.sm) {
+            // Header: main row content, plus the tape strip underneath
+            // whenever this app's tape is on (§3) — visible collapsed AND
+            // expanded, independent of the EQ | Effects | Tape toggle.
+            VStack(spacing: 0) {
+                header
+                if tape.isEnabled {
+                    TapeTransportStrip(model: tape)
+                        .padding(.top, DesignTokens.Spacing.xs)
+                }
+            }
+        } expandedContent: {
+            // EQ | Effects | Tape switch, then the selected panel (§5.1, §7).
+            // SwiftUI calculates natural height via conditional rendering
+            VStack(spacing: DesignTokens.Spacing.xs) {
+                ModeToggle(mode: $panelMode, options: [(.eq, "EQ"), (.effects, "Effects"), (.tape, "Tape")])
+                    .frame(width: 260)
+
+                switch panelMode {
+                case .eq:
+                    eqPanel
+                case .effects:
+                    AUChainPanelView(model: auChain)
+                case .tape:
+                    TapeTransportPanelView(model: tape)
+                }
+            }
+            .padding(.top, DesignTokens.Spacing.sm)
+        }
+        .onChange(of: eqSettings) { _, newValue in
+            // Sync from parent when external EQ settings change
+            localEQSettings = newValue
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: DesignTokens.Spacing.sm) {
                 // VU Meter
                 VUMeter(level: audioLevel, isMuted: isMutedExternal || volume == 0)
 
@@ -181,27 +218,8 @@ struct AppRow: View {
                     onEQToggle: onEQToggle,
                     isRowFocused: isFocused
                 )
-            }
-            .frame(height: DesignTokens.Dimensions.rowContentHeight)
-        } expandedContent: {
-            // EQ | Effects switch, then the selected panel (§5.1).
-            // SwiftUI calculates natural height via conditional rendering
-            VStack(spacing: DesignTokens.Spacing.xs) {
-                ModeToggle(mode: $panelMode, options: [(.eq, "EQ"), (.effects, "Effects")])
-                    .frame(width: 180)
-
-                if panelMode == .eq {
-                    eqPanel
-                } else {
-                    AUChainPanelView(model: auChain)
-                }
-            }
-            .padding(.top, DesignTokens.Spacing.sm)
         }
-        .onChange(of: eqSettings) { _, newValue in
-            // Sync from parent when external EQ settings change
-            localEQSettings = newValue
-        }
+        .frame(height: DesignTokens.Dimensions.rowContentHeight)
     }
 
     private var eqPanel: some View {
@@ -310,6 +328,30 @@ struct AppRow: View {
                     )
                 ],
                 totalLatencySamples: 576
+            )
+        )
+    }
+}
+
+#Preview("App Row - Expanded (Tape panel, strip visible)") {
+    PreviewContainer {
+        AppRow(
+            app: MockData.sampleApps[0],
+            volume: 0.6,
+            audioLevel: 0.5,
+            devices: MockData.sampleDevices,
+            selectedDeviceUID: MockData.sampleDevices[0].uid,
+            onVolumeChange: { _ in },
+            onMuteChange: { _ in },
+            onDeviceSelected: { _ in },
+            isEQExpanded: true,
+            tape: TapeTransportPanelModel(
+                isEnabled: true,
+                ringMinutes: 5,
+                capacitySeconds: 300,
+                recordedSeconds: 300,
+                secondsBehindLive: 134,
+                isLive: false
             )
         )
     }

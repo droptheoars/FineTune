@@ -8,6 +8,7 @@ import SwiftUI
 enum AppPanelMode: Hashable {
     case eq
     case effects
+    case tape
 }
 
 /// Lifecycle/health of one plugin slot, as far as the UI cares (§2.5, §E).
@@ -285,7 +286,7 @@ struct AUChainPanelView: View {
             Image(systemName: "speedometer")
                 .font(.system(size: 10))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .help("This plugin changes playback speed. Full speed control arrives with the recorder (Phase 2); at other speeds audio will glitch.")
+                .help("This plugin changes playback speed and will glitch. Use the tape instead: turn it on for this app and set the speed on its Tape panel.")
         default:
             if let copy = status.badgeCopy {
                 let label = badgeLabel(icon: copy.icon, text: copy.text)
