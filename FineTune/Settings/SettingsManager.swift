@@ -92,7 +92,7 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "SettingsManager")
 
     struct Settings: Codable {
-        var version: Int = 12
+        var version: Int = 13
         var appVolumes: [String: Float] = [:]
         var appDeviceRouting: [String: String] = [:]  // bundleID → deviceUID
         var appMutes: [String: Bool] = [:]  // bundleID → isMuted
@@ -141,6 +141,12 @@ final class SettingsManager {
         // User-created EQ presets (named EQ curves)
         var userEQPresets: [UserEQPreset] = []
 
+        // Per-app AU effect chains (persistenceIdentifier → custom chain).
+        // Absence of a key means "app follows the default chain"; presence with
+        // an empty plugins array means "explicitly no effects" — see spec §4.
+        var appAUChains: [String: AUChainConfig] = [:]
+        var defaultAUChain: AUChainConfig? = nil
+
         init() {}
 
         init(from decoder: Decoder) throws {
@@ -188,6 +194,8 @@ final class SettingsManager {
             favoriteAutoEQProfiles = try c.decodeIfPresent(Set<String>.self, forKey: .favoriteAutoEQProfiles) ?? []
             autoEQPreampEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoEQPreampEnabled) ?? true
             userEQPresets = try c.decodeIfPresent([UserEQPreset].self, forKey: .userEQPresets) ?? []
+            appAUChains = try c.decodeIfPresent([String: AUChainConfig].self, forKey: .appAUChains) ?? [:]
+            defaultAUChain = try c.decodeIfPresent(AUChainConfig.self, forKey: .defaultAUChain)
         }
     }
 
@@ -268,6 +276,34 @@ final class SettingsManager {
     func setEQSettings(_ eqSettings: EQSettings, for appIdentifier: String) {
         settings.appEQSettings[appIdentifier] = eqSettings
         scheduleSave()
+    }
+
+    // MARK: - Per-App AU Effect Chains
+
+    /// Returns the app's custom chain, or nil when the app follows the default chain.
+    /// A non-nil chain with an empty `plugins` array means "explicitly no effects" —
+    /// callers must not collapse this with the nil (follows-default) case.
+    func getAUChain(for identifier: String) -> AUChainConfig? {
+        settings.appAUChains[identifier]
+    }
+
+    func setAUChain(_ chain: AUChainConfig, for identifier: String) {
+        settings.appAUChains[identifier] = chain
+        scheduleSave()
+    }
+
+    /// Removes the app's custom chain, returning it to following the default chain.
+    func clearAUChain(for identifier: String) {
+        settings.appAUChains.removeValue(forKey: identifier)
+        scheduleSave()
+    }
+
+    var defaultAUChain: AUChainConfig? {
+        get { settings.defaultAUChain }
+        set {
+            settings.defaultAUChain = newValue
+            scheduleSave()
+        }
     }
 
     // MARK: - Device Selection Mode
@@ -352,6 +388,11 @@ final class SettingsManager {
         settings.appEQSettings.removeValue(forKey: identifier)
         settings.appDeviceSelectionMode.removeValue(forKey: identifier)
         settings.appSelectedDeviceUIDs.removeValue(forKey: identifier)
+        // A configured non-empty AU chain is user intent and is kept; only an
+        // absent or explicitly-empty chain is cleared.
+        if settings.appAUChains[identifier]?.plugins.isEmpty ?? true {
+            settings.appAUChains.removeValue(forKey: identifier)
+        }
         scheduleSave()
     }
 
@@ -646,6 +687,7 @@ final class SettingsManager {
             .union(settings.appEQSettings.keys)
             .union(settings.appDeviceSelectionMode.keys)
             .union(settings.appSelectedDeviceUIDs.keys)
+            .union(settings.appAUChains.keys)
 
         var pruned = 0
         for identifier in allIdentifiers {
@@ -655,6 +697,8 @@ final class SettingsManager {
             if settings.pinnedApps.contains(identifier) { continue }
             // Keep apps with explicit device routing (user intent)
             if settings.appDeviceRouting[identifier] != nil { continue }
+            // Keep apps with a configured non-empty AU chain (user intent)
+            if settings.appAUChains[identifier]?.plugins.isEmpty == false { continue }
 
             // Check if all remaining settings are default values
             let volume = settings.appVolumes[identifier]
@@ -684,6 +728,7 @@ final class SettingsManager {
             settings.appEQSettings.removeValue(forKey: identifier)
             settings.appDeviceSelectionMode.removeValue(forKey: identifier)
             settings.appSelectedDeviceUIDs.removeValue(forKey: identifier)
+            settings.appAUChains.removeValue(forKey: identifier)
             pruned += 1
         }
 
@@ -862,6 +907,8 @@ final class SettingsManager {
         settings.appDeviceSelectionMode.removeAll()
         settings.appSelectedDeviceUIDs.removeAll()
         settings.userEQPresets.removeAll()
+        settings.appAUChains.removeAll()
+        settings.defaultAUChain = nil
 
         // Also unregister from launch at login
         try? SMAppService.mainApp.unregister()
