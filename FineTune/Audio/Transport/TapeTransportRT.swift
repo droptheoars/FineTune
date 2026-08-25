@@ -320,6 +320,47 @@ final class TapeTransportRT: @unchecked Sendable {
         )
     }
 
+    // MARK: - Non-RT window reader (export, E24)
+
+    /// Copies `frameCount` interleaved stereo frames starting at absolute
+    /// write-clock frame `startFrame` into `destination`, then re-checks the
+    /// write clock. Returns false when that span was never readable, or when
+    /// the writer overwrote any part of it *during* the copy — the copied
+    /// bytes are then meaningless and the caller must discard them (E24).
+    ///
+    /// Any non-RT thread. Lock-free by construction and therefore invisible to
+    /// the RT thread: it never blocks the writer, only itself. Mirror image of
+    /// the write discipline in `writeToRing` — the writer publishes samples
+    /// before the index, so every frame below the loaded `_writeFrames` is
+    /// fully written; the second load catches a writer that lapped us mid-copy.
+    func copyRingWindow(
+        from startFrame: Int64,
+        frameCount: Int,
+        into destination: UnsafeMutablePointer<Float>
+    ) -> Bool {
+        guard frameCount > 0, frameCount <= capacityFrames, startFrame >= 0 else { return false }
+        let endFrame = startFrame &+ Int64(frameCount)
+        let writeFramesBefore = _writeFrames
+        OSMemoryBarrier()
+        // Never read past the write head (unwritten frames) or behind the
+        // ring's physical trailing edge (already overwritten).
+        guard endFrame <= writeFramesBefore,
+              startFrame >= writeFramesBefore - Int64(capacityFrames) else { return false }
+
+        let floatSize = MemoryLayout<Float>.size
+        let startIndex = Int(startFrame % Int64(capacityFrames))
+        let firstRegion = min(frameCount, capacityFrames - startIndex)
+        memcpy(destination, ring + startIndex * 2, firstRegion * 2 * floatSize)
+        if frameCount > firstRegion {
+            memcpy(destination + firstRegion * 2, ring, (frameCount - firstRegion) * 2 * floatSize)
+        }
+
+        OSMemoryBarrier()
+        // The writer advances while we copy; if it reached into this span the
+        // copy is torn and the chunk is dropped from the export's head.
+        return startFrame >= _writeFrames - Int64(capacityFrames)
+    }
+
     // MARK: - RT entry points (HAL I/O thread, primary callback ONLY)
 
     /// RT entry point, once per callback (E16). Writes `frameCount` frames of
