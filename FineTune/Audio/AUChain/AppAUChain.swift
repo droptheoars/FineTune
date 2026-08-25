@@ -123,13 +123,16 @@ final class HostedAUChainUnit: AUChainUnit {
     func configure(sampleRate: Double) throws {
         // Must precede allocation — the AU sizes its internal buffers from it (§2.5).
         unit.maximumFramesToRender = AUAudioFrameCount(AUChainRenderState.sliceCapacity)
+        // DO NOT REMOVE: without an enabled input bus every render returns
+        // kAudioUnitErr_NoConnection (-10876) and the pull block is never
+        // invoked — the slot allocates, reports ready, and silently passes no
+        // audio. Found empirically in T2; not in the spec.
+        unit.inputBusses[0].isEnabled = true
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
             throw AUChainUnitError.unsupportedFormat
         }
         try unit.inputBusses[0].setFormat(format)
         try unit.outputBusses[0].setFormat(format)
-        // Without this the v2 bridge fails renders with kAudioUnitErr_NoConnection.
-        unit.inputBusses[0].isEnabled = true
     }
 
     func restoreState(_ blob: Data) throws {
@@ -227,12 +230,18 @@ final class AppAUChain {
     private let logger = Logger(subsystem: "com.finetuneapp.FineTune", category: "AUChain")
 
     private weak var host: AUChainHosting?
-    private var sampleRate: Double?
+    /// The rate the instances are built at. Readable so the Effects panel can turn
+    /// `totalLatencySamples` into milliseconds (§5.2); `nil` until a tap attaches.
+    private(set) var sampleRate: Double?
     /// Replaced wholesale when a plugin wedges it (§E). `var` on purpose.
     private var builderQueue: DispatchQueue
     /// Bumped on every rate change and release so in-flight bring-ups can tell
     /// they are stale and dispose their instance instead of publishing it.
     private var generation: UInt64 = 0
+
+    /// In-flight lifecycle Tasks (bring-up, rate rebuild), so callers can await
+    /// a settled chain instead of polling for it.
+    private var pendingTasks: [Task<Void, Never>] = []
 
     private var currentState: AUChainRenderState?
     /// Slot ids of `currentState`'s nodes, in the same order — the map used to
@@ -299,9 +308,9 @@ final class AppAUChain {
         generation &+= 1
         publish(nil, slotIDs: [])
         let generationAtStart = generation
-        Task { @MainActor in
+        pendingTasks.append(Task { @MainActor in
             await self.rebuildInstances(generation: generationAtStart, rate: newRate)
-        }
+        })
     }
 
     /// App left the list (§2.6, E10): capture state, close windows, drop the
@@ -520,8 +529,19 @@ final class AppAUChain {
     private func bringUp(_ slotID: UUID) {
         guard sampleRate != nil else { return }
         let generationAtStart = generation
-        Task { @MainActor in
+        pendingTasks.append(Task { @MainActor in
             await self.bringSlotUp(slotID, existing: nil, generation: generationAtStart)
+        })
+    }
+
+    /// Awaits every in-flight lifecycle Task, including ones they spawn. The
+    /// loop matters: a bring-up can queue another (rate re-entry, stale-device
+    /// rebuild) while it is being awaited.
+    func waitForPendingWork() async {
+        while !pendingTasks.isEmpty {
+            let inFlight = pendingTasks
+            pendingTasks.removeAll()
+            for task in inFlight { await task.value }
         }
     }
 

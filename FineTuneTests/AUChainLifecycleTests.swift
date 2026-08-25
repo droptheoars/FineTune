@@ -205,9 +205,8 @@ struct AppAUChainFailureTests {
         let host = FakeHost()
 
         chain.attach(to: host, sampleRate: 48000)
-        await waitUntil("both slots to fail") {
-            chain.slots.allSatisfy { $0.state == .failed(.missing) }
-        }
+        await chain.waitForPendingWork()
+        #expect(chain.slots.allSatisfy { $0.state == .failed(.missing) })
 
         // Position kept, blob kept — reinstalling the plugin revives the slot (§E).
         #expect(chain.slots.count == 2)
@@ -226,7 +225,8 @@ struct AppAUChainFailureTests {
         let chain = makeChain(plugins: [makeConfig(name: "Picky Plugin")], factory: factory)
 
         chain.attach(to: FakeHost(), sampleRate: 48000)
-        await waitUntil("the slot to fail") { chain.slots[0].state == .failed(.formatRefused) }
+        await chain.waitForPendingWork()
+        #expect(chain.slots[0].state == .failed(.formatRefused))
 
         #expect(factory.made.count == 1)
         // Configure was attempted; allocation never was.
@@ -242,7 +242,8 @@ struct AppAUChainFailureTests {
         let host = FakeHost()
 
         chain.attach(to: host, sampleRate: 48000)
-        await waitUntil("the slot to become ready") { chain.slots[0].state == .ready }
+        await chain.waitForPendingWork()
+        #expect(chain.slots[0].state == .ready)
 
         // Restore failure is a badge, not a lifecycle failure — audio still works.
         #expect(chain.slots[0].stateRestoreFailed)
@@ -266,16 +267,16 @@ struct AppAUChainFailureTests {
         )
 
         chain.attach(to: FakeHost(), sampleRate: 48000)
-        await waitUntil("the watchdog to fire", timeout: 8.0) { chain.slots[0].state == .failed(.hung) }
+        await chain.waitForPendingWork()
+        #expect(chain.slots[0].state == .failed(.hung))
         let wedged = factory.made[0].log
         #expect(!wedged.events.contains(.allocate), "the wedged allocate has not returned — the watchdog fired, not the blocker")
 
         // The wedged queue was abandoned: a slot added afterwards builds on a
         // fresh one while the old queue is still stuck inside the blocker.
         chain.addPlugin(makeConfig(name: "Healthy Plugin"))
-        await waitUntil("the new slot to become ready", timeout: 8.0) {
-            chain.slots.last?.state == .ready
-        }
+        await chain.waitForPendingWork()
+        #expect(chain.slots.last?.state == .ready)
         #expect(!wedged.events.contains(.allocate), "the old queue is still wedged, and the chain built anyway")
     }
 }
@@ -296,7 +297,8 @@ struct AppAUChainReleaseTests {
         chain.onPersist = { plugins, _ in persisted = plugins }
 
         chain.attach(to: host, sampleRate: 48000)
-        await waitUntil("the slot to become ready") { chain.slots[0].state == .ready }
+        await chain.waitForPendingWork()
+        #expect(chain.slots[0].state == .ready)
         #expect((host.published.last ?? nil) != nil)
 
         chain.release()
@@ -338,7 +340,8 @@ struct AppAUChainReleaseTests {
         let host = FakeHost()
 
         chain.attach(to: host, sampleRate: 48000)
-        await waitUntil("the slot to become ready") { chain.slots[0].state == .ready }
+        await chain.waitForPendingWork()
+        #expect(chain.slots[0].state == .ready)
 
         chain.removePlugin(id: plugin.id)
         #expect(chain.slots.isEmpty)
@@ -375,10 +378,10 @@ struct AUChainManagerTests {
         manager.attach(to: FakeHost(), identifier: "app.one", sampleRate: 48000, appName: "One")
         manager.attach(to: FakeHost(), identifier: "app.two", sampleRate: 48000, appName: "Two")
 
-        await waitUntil("both chains to build") {
-            manager.chain(for: "app.one")?.slots.first?.state == .ready
-                && manager.chain(for: "app.two")?.slots.first?.state == .ready
-        }
+        await manager.chain(for: "app.one")?.waitForPendingWork()
+        await manager.chain(for: "app.two")?.waitForPendingWork()
+        #expect(manager.chain(for: "app.one")?.slots.first?.state == .ready)
+        #expect(manager.chain(for: "app.two")?.slots.first?.state == .ready)
         #expect(manager.chain(for: "app.one")?.followsDefault == true)
         // Two apps, two separate instances — never shared across taps (§4).
         #expect(factory.made.count == 2)
@@ -412,7 +415,8 @@ struct AUChainManagerTests {
 
         manager.attach(to: FakeHost(), identifier: "app.one", sampleRate: 48000)
         let chain = try #require(manager.chain(for: "app.one"))
-        await waitUntil("the chain to build") { chain.slots.first?.state == .ready }
+        await chain.waitForPendingWork()
+        #expect(chain.slots.first?.state == .ready)
 
         chain.flushSync()
 
