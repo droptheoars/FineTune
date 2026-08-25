@@ -97,20 +97,20 @@ anyone. That is what you are for.
 ## 6. Failure drill
 *Proves a missing plugin degrades politely and its settings survive.*
 
-27. Quit FineTune. Move RC-20's or Cassette's `.component` out of `/Library/Audio/Plug-Ins/Components`
+28. Quit FineTune. Move RC-20's or Cassette's `.component` out of `/Library/Audio/Plug-Ins/Components`
     to your Desktop. (Use a third-party one — leave the Apple AUs alone.)
-28. Relaunch, play the app that used it, open Effects. Expect the slot **still in its original
+29. Relaunch, play the app that used it, open Effects. Expect the slot **still in its original
     position** with badge `Not installed`, and any other plugin in that chain still audible.
-29. Quit, move the plugin back, relaunch. The slot revives — open its window and confirm the knobs
+30. Quit, move the plugin back, relaunch. The slot revives — open its window and confirm the knobs
     are **your old settings**, not defaults.
 
 ## 7. Regression — the things that must not have broken
-30. EQ still works per app, AutoEQ still applies, loudness compensation still works, VU meters move.
-31. Switch devices with the chain **bypassed** and with **no chain at all** — behaviour identical to before.
-32. Take or simulate a Bluetooth phone call (A2DP↔SCO transition) with a chain active — no crash.
+31. EQ still works per app, AutoEQ still applies, loudness compensation still works, VU meters move.
+32. Switch devices with the chain **bypassed** and with **no chain at all** — behaviour identical to before.
+33. Take or simulate a Bluetooth phone call (A2DP↔SCO transition) with a chain active — no crash.
 
 ## 8. Inactive apps
-33. Pin an app, quit that app, expand it → **Effects**. The panel is there and edits persist across a
+34. Pin an app, quit that app, expand it → **Effects**. The panel is there and edits persist across a
     FineTune relaunch. **Known limit**: "Open plugin window" does nothing until the app plays again —
     with no audio there is no sample rate, so no plugin instance exists yet.
 
