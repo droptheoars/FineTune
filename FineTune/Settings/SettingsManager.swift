@@ -92,7 +92,25 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "SettingsManager")
 
     struct Settings: Codable {
-        var version: Int = 13
+        /// The schema version this build writes. `encode(to:)` always stamps this value,
+        /// regardless of what version the file was decoded from — a bumped `version`
+        /// constant with no corresponding save was how v13 silently never landed on disk.
+        static let currentVersion = 14
+
+        // Custom `encode(to:)` below (for the version stamp) disables CodingKeys
+        // synthesis, so this must be kept in sync with the stored properties by hand.
+        enum CodingKeys: String, CodingKey {
+            case version, appVolumes, appDeviceRouting, appMutes, appBoosts, appEQSettings,
+                 appSettings, systemSoundsFollowsDefault, appDeviceSelectionMode, appSelectedDeviceUIDs,
+                 lockedInputDeviceUID, preferredInputDeviceUID, pinnedApps, pinnedAppInfo,
+                 ignoredApps, ignoredAppInfo, ddcVolumes, ddcMuteStates, ddcSavedVolumes,
+                 softwareDeviceVolumes, softwareDeviceMuteStates, softwareDeviceSavedVolumes,
+                 deviceVolumeTierOverride, deviceIconOverrides, outputDevicePriority, inputDevicePriority,
+                 hiddenOutputDeviceUIDs, hiddenInputDeviceUIDs, deviceAutoEQ, favoriteAutoEQProfiles,
+                 autoEQPreampEnabled, userEQPresets, appAUChains, defaultAUChain, appTapeTransport
+        }
+
+        var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
         var appDeviceRouting: [String: String] = [:]  // bundleID → deviceUID
         var appMutes: [String: Bool] = [:]  // bundleID → isMuted
@@ -147,6 +165,10 @@ final class SettingsManager {
         var appAUChains: [String: AUChainConfig] = [:]
         var defaultAUChain: AUChainConfig? = nil
 
+        // Per-app tape transport (ring buffer + rewind/tape mode). Absence of a key
+        // means the transport is off for that app — see spec §3-I.
+        var appTapeTransport: [String: TapeTransportConfig] = [:]
+
         init() {}
 
         init(from decoder: Decoder) throws {
@@ -196,6 +218,50 @@ final class SettingsManager {
             userEQPresets = try c.decodeIfPresent([UserEQPreset].self, forKey: .userEQPresets) ?? []
             appAUChains = try c.decodeIfPresent([String: AUChainConfig].self, forKey: .appAUChains) ?? [:]
             defaultAUChain = try c.decodeIfPresent(AUChainConfig.self, forKey: .defaultAUChain)
+            appTapeTransport = try c.decodeIfPresent([String: TapeTransportConfig].self, forKey: .appTapeTransport) ?? [:]
+        }
+
+        // Manual `encode(to:)` — the only reason this exists is to force `version` to
+        // `currentVersion` on every encode regardless of what was decoded (see the
+        // doc comment on `currentVersion`). Everything else mirrors the encoding the
+        // compiler would otherwise synthesize; keep this in sync when adding fields.
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(Self.currentVersion, forKey: .version)
+            try c.encode(appVolumes, forKey: .appVolumes)
+            try c.encode(appDeviceRouting, forKey: .appDeviceRouting)
+            try c.encode(appMutes, forKey: .appMutes)
+            try c.encode(appBoosts, forKey: .appBoosts)
+            try c.encode(appEQSettings, forKey: .appEQSettings)
+            try c.encode(appSettings, forKey: .appSettings)
+            try c.encode(systemSoundsFollowsDefault, forKey: .systemSoundsFollowsDefault)
+            try c.encode(appDeviceSelectionMode, forKey: .appDeviceSelectionMode)
+            try c.encode(appSelectedDeviceUIDs, forKey: .appSelectedDeviceUIDs)
+            try c.encodeIfPresent(lockedInputDeviceUID, forKey: .lockedInputDeviceUID)
+            try c.encodeIfPresent(preferredInputDeviceUID, forKey: .preferredInputDeviceUID)
+            try c.encode(pinnedApps, forKey: .pinnedApps)
+            try c.encode(pinnedAppInfo, forKey: .pinnedAppInfo)
+            try c.encode(ignoredApps, forKey: .ignoredApps)
+            try c.encode(ignoredAppInfo, forKey: .ignoredAppInfo)
+            try c.encode(ddcVolumes, forKey: .ddcVolumes)
+            try c.encode(ddcMuteStates, forKey: .ddcMuteStates)
+            try c.encode(ddcSavedVolumes, forKey: .ddcSavedVolumes)
+            try c.encode(softwareDeviceVolumes, forKey: .softwareDeviceVolumes)
+            try c.encode(softwareDeviceMuteStates, forKey: .softwareDeviceMuteStates)
+            try c.encode(softwareDeviceSavedVolumes, forKey: .softwareDeviceSavedVolumes)
+            try c.encode(deviceVolumeTierOverride, forKey: .deviceVolumeTierOverride)
+            try c.encode(deviceIconOverrides, forKey: .deviceIconOverrides)
+            try c.encode(outputDevicePriority, forKey: .outputDevicePriority)
+            try c.encode(inputDevicePriority, forKey: .inputDevicePriority)
+            try c.encode(hiddenOutputDeviceUIDs, forKey: .hiddenOutputDeviceUIDs)
+            try c.encode(hiddenInputDeviceUIDs, forKey: .hiddenInputDeviceUIDs)
+            try c.encode(deviceAutoEQ, forKey: .deviceAutoEQ)
+            try c.encode(favoriteAutoEQProfiles, forKey: .favoriteAutoEQProfiles)
+            try c.encode(autoEQPreampEnabled, forKey: .autoEQPreampEnabled)
+            try c.encode(userEQPresets, forKey: .userEQPresets)
+            try c.encode(appAUChains, forKey: .appAUChains)
+            try c.encodeIfPresent(defaultAUChain, forKey: .defaultAUChain)
+            try c.encode(appTapeTransport, forKey: .appTapeTransport)
         }
     }
 
@@ -306,6 +372,25 @@ final class SettingsManager {
         }
     }
 
+    // MARK: - Per-App Tape Transport
+
+    /// Returns the app's tape transport config, or nil when it has never been configured
+    /// (equivalent to a default, disabled `TapeTransportConfig`).
+    func getTapeTransport(for identifier: String) -> TapeTransportConfig? {
+        settings.appTapeTransport[identifier]
+    }
+
+    func setTapeTransport(_ config: TapeTransportConfig, for identifier: String) {
+        settings.appTapeTransport[identifier] = config
+        scheduleSave()
+    }
+
+    /// Removes the app's tape transport config, returning it to the default (off) state.
+    func clearTapeTransport(for identifier: String) {
+        settings.appTapeTransport.removeValue(forKey: identifier)
+        scheduleSave()
+    }
+
     // MARK: - Device Selection Mode
 
     func getDeviceSelectionMode(for identifier: String) -> DeviceSelectionMode? {
@@ -392,6 +477,10 @@ final class SettingsManager {
         // absent or explicitly-empty chain is cleared.
         if settings.appAUChains[identifier]?.plugins.isEmpty ?? true {
             settings.appAUChains.removeValue(forKey: identifier)
+        }
+        // Same rule for tape transport: an enabled config is user intent and is kept.
+        if settings.appTapeTransport[identifier]?.isEnabled != true {
+            settings.appTapeTransport.removeValue(forKey: identifier)
         }
         scheduleSave()
     }
@@ -688,6 +777,7 @@ final class SettingsManager {
             .union(settings.appDeviceSelectionMode.keys)
             .union(settings.appSelectedDeviceUIDs.keys)
             .union(settings.appAUChains.keys)
+            .union(settings.appTapeTransport.keys)
 
         var pruned = 0
         for identifier in allIdentifiers {
@@ -699,6 +789,8 @@ final class SettingsManager {
             if settings.appDeviceRouting[identifier] != nil { continue }
             // Keep apps with a configured non-empty AU chain (user intent)
             if settings.appAUChains[identifier]?.plugins.isEmpty == false { continue }
+            // Keep apps with an enabled tape transport (user intent)
+            if settings.appTapeTransport[identifier]?.isEnabled == true { continue }
 
             // Check if all remaining settings are default values
             let volume = settings.appVolumes[identifier]
@@ -729,6 +821,7 @@ final class SettingsManager {
             settings.appDeviceSelectionMode.removeValue(forKey: identifier)
             settings.appSelectedDeviceUIDs.removeValue(forKey: identifier)
             settings.appAUChains.removeValue(forKey: identifier)
+            settings.appTapeTransport.removeValue(forKey: identifier)
             pruned += 1
         }
 
@@ -909,6 +1002,7 @@ final class SettingsManager {
         settings.userEQPresets.removeAll()
         settings.appAUChains.removeAll()
         settings.defaultAUChain = nil
+        settings.appTapeTransport.removeAll()
 
         // Also unregister from launch at login
         try? SMAppService.mainApp.unregister()
