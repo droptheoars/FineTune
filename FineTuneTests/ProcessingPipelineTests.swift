@@ -107,7 +107,8 @@ private func processWithDefaults(
     autoEQProc: AutoEQProcessor? = nil,
     loudnessEqualizerProc: LoudnessEqualizer? = nil,
     loudnessCompensatorProc: LoudnessCompensator? = nil,
-    auChain: AUChainRenderState? = nil
+    auChain: AUChainRenderState? = nil,
+    transport: TapeTransportRT? = nil
 ) {
     ProcessTapController.processMappedBuffers(
         inputBuffers: input.bufferList,
@@ -123,7 +124,8 @@ private func processWithDefaults(
         autoEQProc: autoEQProc,
         loudnessEqualizerProc: loudnessEqualizerProc,
         loudnessCompensatorProc: loudnessCompensatorProc,
-        auChain: auChain
+        auChain: auChain,
+        transport: transport
     )
 }
 
@@ -1336,5 +1338,194 @@ struct AUChainCallbackScopeTests {
 
         #expect(counter.count == 0, "chain is stereo-gated exactly like EQ")
         expectAllSamples(output, at: 0, equal: Self.dry, "mono behaviour unchanged")
+    }
+}
+
+// MARK: - Tape Transport Callback-Scope Tests (Phase 2 §6-E16/E17/E19/E21)
+
+/// The tape has the same stacked-aggregate hazard as the AU chain, one notch worse:
+/// a double write puts every sample in the ring TWICE (half-speed playback of doubled
+/// audio) and a double read advances the play head at 2×. `TapeTransportRTTests` covers
+/// the ring and read head themselves; this suite covers the callback-scope wiring in
+/// `processMappedBuffers` and the two RT helpers the audio callback calls around it.
+@Suite("ProcessTapController — Tape Transport Callback Scope (E16)")
+struct TapeTransportCallbackScopeTests {
+
+    private static let rate = 48_000.0
+    /// 5 s ring: capacity must exceed the 1 s writer margin or the valid window is empty.
+    private static let capacity = 240_000
+    private static let frames = 512
+    private static let dry: Float = 0.5   // below the 0.95 limiter threshold
+
+    private func makeTape() -> TapeTransportRT {
+        TapeTransportRT(sampleRate: Self.rate, capacityFrames: Self.capacity)
+    }
+
+    /// Runs `callbacks` live callbacks of constant `value` straight through the RT
+    /// entry point, so the ring holds real audio to rewind into.
+    private func primeTape(_ tape: TapeTransportRT, callbacks: Int, value: Float = dry) {
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: Self.frames * 2)
+        defer { scratch.deallocate() }
+        for _ in 0..<callbacks {
+            scratch.update(repeating: value, count: Self.frames * 2)
+            let rendered = tape.writeAndRender(interleavedStereo: scratch, frameCount: Self.frames)
+            #expect(rendered == false, "priming must stay pinned to live")
+        }
+    }
+
+    private func samples(_ abl: TestABL, at index: Int) -> [Float] {
+        let data = abl.data(at: index)
+        return Array(UnsafeBufferPointer(start: data, count: abl.sampleCount(at: index)))
+    }
+
+    @Test("Two mirrored buffers write the ring once: N frames, not 2N")
+    func mirroredBuffersWriteRingOnce() {
+        let tape = makeTape()
+        let input = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        fill(input, bufferIndex: 1, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol, transport: tape)
+
+        #expect(tape.writtenFrames == Int64(Self.frames),
+                "a second write per callback records every sample twice (E16)")
+    }
+
+    @Test("Live passthrough leaves mirrored buffers alone — no mirror copy")
+    func liveLeavesMirroredBuffersUntouched() {
+        let tape = makeTape()
+        let input = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        // Deliberately NOT mirrored: a wrongly-taken copy path would overwrite this
+        // with buffer 0's audio (or with the empty mirror store's zeroes).
+        fill(input, bufferIndex: 1, value: 0.25)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol, transport: tape)
+
+        expectAllSamples(output, at: 0, equal: Self.dry, "live passthrough is bit-exact")
+        expectAllSamples(output, at: 1, equal: 0.25, "no copy when the transport stayed live")
+    }
+
+    @Test("Non-live: the read head advances once, and the second buffer mirrors the first")
+    func nonLiveAdvancesReadHeadOncePerCallback() {
+        let tape = makeTape()
+        primeTape(tape, callbacks: 8)                      // write clock at 4096
+        let seekTarget: Int64 = 2048
+        tape.requestSeek(toFrame: seekTarget)
+
+        let input = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        fill(input, bufferIndex: 0, value: 0)
+        fill(input, bufferIndex: 1, value: 0)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol, transport: tape)
+
+        let diagnostics = tape.diagnosticsSnapshot()
+        #expect(diagnostics.isPinnedToLive == false, "the seek must have engaged the tape")
+        // Rate 1.0 is an exact integer Q40.24 step, so this is an equality, not a
+        // tolerance: a second read would land on 3072 << 24.
+        #expect(diagnostics.readPositionQ == (seekTarget + Int64(Self.frames)) << 24,
+                "the play head must advance exactly one buffer per HAL callback (E16)")
+        #expect(tape.writtenFrames == Int64(8 * Self.frames + Self.frames),
+                "the record head must also advance exactly once")
+        #expect(samples(output, at: 0) == samples(output, at: 1),
+                "the mirrored buffer must be a copy of the same tape output")
+    }
+
+    @Test("No transport pointer (secondary role) leaves the ring and read head untouched")
+    func nilTransportNeitherWritesNorReads() {
+        let tape = makeTape()
+        primeTape(tape, callbacks: 8)
+        tape.requestSeek(toFrame: 2048)
+        let before = tape.diagnosticsSnapshot()
+
+        let input = TestABL(buffers: [(2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        var vol: Float = 1.0
+
+        // The callback passes nil in the secondary role (E17) — two concurrent writers
+        // of the ring state is a data race in our own code.
+        processWithDefaults(input: input, output: output, currentVol: &vol, transport: nil)
+
+        #expect(tape.writtenFrames == before.writeFrames, "secondary role must not record")
+        #expect(tape.diagnosticsSnapshot().readPositionQ == before.readPositionQ,
+                "secondary role must not move the play head")
+        expectAllSamples(output, at: 0, equal: Self.dry, "and must render live audio")
+    }
+
+    @Test("Non-stereo tap never touches the tape")
+    func monoTapBypassesTape() {
+        let tape = makeTape()
+        let input = TestABL(buffers: [(1, Self.frames)])
+        let output = TestABL(buffers: [(1, Self.frames)])
+        fill(input, bufferIndex: 0, value: Self.dry)
+        var vol: Float = 1.0
+
+        processWithDefaults(input: input, output: output, currentVol: &vol, transport: tape)
+
+        #expect(tape.writtenFrames == 0, "transport is stereo-gated exactly like EQ")
+        expectAllSamples(output, at: 0, equal: Self.dry, "mono behaviour unchanged")
+    }
+
+    @Test("silenceOutput zeroes the output and keeps the tape timeline advancing (E21)")
+    func silenceOutputWritesSilence() {
+        let tape = makeTape()
+        let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
+        fill(output, bufferIndex: 0, value: Self.dry)
+        fill(output, bufferIndex: 1, value: Self.dry)
+
+        ProcessTapController.silenceOutput(output.bufferList, transport: tape)
+
+        expectAllSamples(output, at: 0, equal: 0, "mute must silence the output")
+        expectAllSamples(output, at: 1, equal: 0, "every mirrored buffer too")
+        #expect(tape.writtenFrames == Int64(Self.frames),
+                "skipping the silence write tears the timeline; writing twice doubles it")
+    }
+
+    @Test("silenceOutput with no transport still zeroes the output")
+    func silenceOutputWithoutTape() {
+        let output = TestABL(buffers: [(2, Self.frames)])
+        fill(output, bufferIndex: 0, value: Self.dry)
+
+        ProcessTapController.silenceOutput(output.bufferList, transport: nil)
+
+        expectAllSamples(output, at: 0, equal: 0, "unchanged behaviour without a tape")
+    }
+
+    @Test("Meter and gate follow the live input while the transport is live (E19)")
+    func audiblePeakIsLiveInputWhenPinned() {
+        let tape = makeTape()
+        #expect(ProcessTapController.audibleInputPeak(livePeak: 0.3, transport: tape) == 0.3)
+        #expect(ProcessTapController.audibleInputPeak(livePeak: 0.3, transport: nil) == 0.3)
+    }
+
+    @Test("Meter and gate follow the tape output while it plays the past (E19)")
+    func audiblePeakSubstitutesTapeOutputWhenEngaged() {
+        let tape = makeTape()
+        primeTape(tape, callbacks: 8)             // 0.5 recorded, write clock at 4096
+        tape.requestSeek(toFrame: 2048)
+
+        // Silent live input from here on: the app has gone quiet while the user
+        // listens to the past. Three callbacks outlast the 20 ms seek crossfade.
+        let scratch = UnsafeMutablePointer<Float>.allocate(capacity: Self.frames * 2)
+        defer { scratch.deallocate() }
+        for _ in 0..<3 {
+            scratch.update(repeating: 0, count: Self.frames * 2)
+            let rendered = tape.writeAndRender(interleavedStereo: scratch, frameCount: Self.frames)
+            #expect(rendered, "the tape must be playing the past")
+        }
+
+        let substituted = ProcessTapController.audibleInputPeak(livePeak: 0, transport: tape)
+        #expect(substituted > 0.4,
+                """
+                the gate would otherwise accumulate silence, re-arm and fade the tape's \
+                own recording to zero, and the meter would flatline (E19)
+                """)
     }
 }

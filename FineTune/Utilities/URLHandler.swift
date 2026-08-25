@@ -16,6 +16,7 @@ protocol URLHandlerEngine {
     func setVolumeForInactive(identifier: String, to volume: Float)
     func setMuteForInactive(identifier: String, to muted: Bool)
     func getMuteForInactive(identifier: String) -> Bool
+    func editableTapeTransport(for identifier: String, appName: String) -> AppTapeTransport
 }
 
 /// Handles URL scheme actions for FineTune (finetune://...)
@@ -56,6 +57,8 @@ final class URLHandler {
             handleSetDevice(queryItems: queryItems)
         case "reset":
             handleReset(queryItems: queryItems)
+        case "tape":
+            handleTape(queryItems: queryItems)
         default:
             logger.warning("Unknown URL action: \(host ?? "nil")")
         }
@@ -286,6 +289,96 @@ final class URLHandler {
                 }
             }
         }
+    }
+
+    // MARK: - Tape Transport (debug surface)
+
+    /// Drive an app's tape transport by hand. This is the interim control surface for
+    /// Phase 2 (spec §5) until the transport UI exists, and the vehicle for hearing
+    /// rewind early.
+    ///
+    /// URL format: `finetune://tape?app=com.spotify.client&<one or more controls>`
+    ///   `enable=true|false`  arm/disarm the tape (recording starts when armed)
+    ///   `rewind=<seconds>`   play from N seconds behind live
+    ///   `rate=<-4…4>`        tape speed; 0 = stopped (pitch follows speed)
+    ///   `ramp=<seconds>`     optional rate ramp for this change (default 0.02; try 0.8 for a brake)
+    ///   `live=1`             return to live through the 50 ms crossfade
+    ///   `export=<minutes>`   retro-record the last N minutes (needs T6's exporter)
+    ///   `status=1`           log the transport diagnostics
+    ///
+    /// Controls apply in that order. Arming allocates the ring off-main, so `enable=true`
+    /// and `rewind` in the SAME URL will not both take effect — send them separately.
+    private func handleTape(queryItems: [URLQueryItem]) {
+        guard let identifier = queryItems.first(where: { $0.name.lowercased() == "app" })?.value else {
+            logger.error("tape: missing app parameter")
+            return
+        }
+        let appName = findApp(by: identifier)?.name ?? identifier
+        let owner = audioEngine.editableTapeTransport(for: identifier, appName: appName)
+
+        if let raw = tapeValue("enable", in: queryItems) {
+            guard let enabled = parseBool(raw) else {
+                logger.error("tape: invalid enable value '\(raw)'")
+                return
+            }
+            owner.setEnabled(enabled)
+            logger.info("tape: \(enabled ? "armed" : "disarmed") for \(identifier)")
+        }
+
+        guard let rt = owner.transport else {
+            if queryItems.contains(where: { $0.name.lowercased() != "app" && $0.name.lowercased() != "enable" }) {
+                logger.warning("tape: no ring for \(identifier) yet — arm it first, then re-send")
+            }
+            return
+        }
+
+        if let raw = tapeValue("rewind", in: queryItems) {
+            guard let seconds = Double(raw), seconds >= 0 else {
+                logger.error("tape: invalid rewind value '\(raw)'")
+                return
+            }
+            let target = rt.writtenFrames - Int64((seconds * rt.sampleRate).rounded())
+            rt.requestSeek(toFrame: max(0, target))
+            logger.info("tape: seek \(seconds, format: .fixed(precision: 2))s behind live for \(identifier)")
+        }
+
+        if let raw = tapeValue("rate", in: queryItems) {
+            guard let rate = Float(raw) else {
+                logger.error("tape: invalid rate value '\(raw)'")
+                return
+            }
+            let ramp = tapeValue("ramp", in: queryItems).flatMap(Double.init)
+                ?? TapeTransportRT.defaultRampSeconds
+            rt.setTargetRate(rate, rampSeconds: ramp)
+            logger.info("tape: rate \(rate) over \(ramp, format: .fixed(precision: 3))s for \(identifier)")
+        }
+
+        if let raw = tapeValue("live", in: queryItems), parseBool(raw) == true {
+            rt.requestLive()
+            logger.info("tape: LIVE for \(identifier)")
+        }
+
+        if let raw = tapeValue("export", in: queryItems) {
+            guard let minutes = Double(raw), minutes > 0 else {
+                logger.error("tape: invalid export value '\(raw)'")
+                return
+            }
+            let started = owner.export(lastMinutes: minutes)
+            logger.info("tape: export of \(minutes, format: .fixed(precision: 2))min \(started ? "started" : "unavailable")")
+        }
+
+        if let raw = tapeValue("status", in: queryItems), parseBool(raw) == true {
+            let d = rt.diagnosticsSnapshot()
+            logger.info("""
+                tape status \(identifier): live=\(d.isPinnedToLive) lag=\(d.lagFrames) \
+                written=\(d.writeFrames) horizon=\(d.isAtHorizon) loopDegraded=\(d.isLoopDegraded) \
+                clamps=\(d.clampEventCount) seeks=\(d.seeksConsumed) peak=\(d.lastOutputPeak)
+                """)
+        }
+    }
+
+    private func tapeValue(_ name: String, in queryItems: [URLQueryItem]) -> String? {
+        queryItems.first { $0.name.lowercased() == name }?.value
     }
 
     // MARK: - Helpers

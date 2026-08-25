@@ -19,13 +19,16 @@ import os
 //      _primaryCurrentVolume/_secondaryCurrentVolume, _lastRenderHostTime, _hasRenderedAudio
 //    - Primary role only: renders the AU chain through auChainState — one render()
 //      per callback, memcpy for mirrored buffers (see processMappedBuffers, spec E1).
+//    - Primary role only: writes/reads the tape through tapeTransport — one
+//      writeAndRender() per callback (Phase 2 E16/E17); the mute and force-silence
+//      early returns still write silence so the tape timeline stays continuous (E21).
 //    - MUST NOT allocate, lock, log, or call ObjC. See .claude/rules/rt-safety.md
 //
 // The nonisolated(unsafe) annotation marks variables that cross the thread boundary.
 // Aligned Float32/Bool/Int reads/writes are atomic on Apple ARM64/x86-64.
 
 @MainActor
-final class ProcessTapController: ProcessTapControlling, AUChainHosting {
+final class ProcessTapController: ProcessTapControlling, AUChainHosting, TapeTransportHosting {
     let app: AudioApp
     private let logger: Logger
     // Note: This queue is passed to AudioDeviceCreateIOProcIDWithBlock but the actual
@@ -132,6 +135,11 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
     /// Read by the primary callback only — the secondary tap stays dry through a
     /// crossfade (§C), so there is no secondary counterpart.
     private nonisolated(unsafe) var auChainState: AUChainRenderState?
+    /// Per-app tape ring + read head, published by TapeTransportManager (Phase 2 §2.2).
+    /// Long-lived MUTABLE RT state, unlike the chain's immutable plans — the tap holds
+    /// only the pointer, never ownership. Primary callback only (E17): a second
+    /// concurrent writer of the ring/read-head state is a data race in our own code.
+    private nonisolated(unsafe) var tapeTransport: TapeTransportRT?
     /// Last effective loudness volume (device × app) passed to updateLoudnessCompensation.
     /// Used by createSecondaryTap to initialize secondary compensator with the correct volume.
     private var _lastLoudnessVolume: Float = 1.0
@@ -307,6 +315,19 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
     func setAUChain(_ state: AUChainRenderState?) {
         let old = auChainState
         auChainState = state
+        OSMemoryBarrier()
+        if let old {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { _ = old }
+        }
+    }
+
+    /// Publishes the app's tape ring to the audio callback (Phase 2 §2.2, E32).
+    /// Same swap idiom as `setAUChain` — the tap never owns the object, so this only
+    /// hands the RT thread a pointer and keeps the old one alive past any in-flight
+    /// callback. `AppTapeTransport` waits out the same grace before it frees the ring.
+    func setTransport(_ transport: TapeTransportRT?) {
+        let old = tapeTransport
+        tapeTransport = transport
         OSMemoryBarrier()
         if let old {
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { _ = old }
@@ -1360,10 +1381,20 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
         autoEQProc: AutoEQProcessor?,
         loudnessEqualizerProc: LoudnessEqualizer?,
         loudnessCompensatorProc: LoudnessCompensator?,
-        auChain: AUChainRenderState? = nil
+        auChain: AUChainRenderState? = nil,
+        transport: TapeTransportRT? = nil
     ) {
         let inputBufferCount = inputBuffers.count
         let outputBufferCount = outputBuffers.count
+
+        // Tape transport, once per callback (E16) — the ring must gain N frames, not
+        // 2N, and the read head must advance exactly once. Sibling to the chain flags
+        // below, never merged with them: either layer can be nil independently (§2.1).
+        var transportDidRun = false
+        // False when the transport passed the buffer through live. Mirrored buffers are
+        // then already identical by construction and need no copy; copying would hand
+        // them the PREVIOUS callback's tape output instead.
+        var transportRenderedPast = false
 
         // AU chain, once per callback (E1). A stacked mirroring aggregate presents one
         // identical stereo buffer per sub-device; the chain is stateful, so it renders on
@@ -1493,6 +1524,22 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
                 eq.process(input: outputSamples, output: outputSamples, frameCount: frameCount)
             }
 
+            // Tape transport (Phase 2 §2.4) — records the post-fader post-EQ signal and,
+            // when not pinned to live, replaces the buffer with tape output so the AU
+            // chain below renders the past. The chain call itself does not move; AutoEQ,
+            // loudness and the limiter stay live after it. Same stereo gate as EQ.
+            if let transport, eqCanProcessStereoInterleaved {
+                if transportDidRun {
+                    if transportRenderedPast {
+                        transport.copyLastOutput(into: outputSamples, frameCount: frameCount)
+                    }
+                } else {
+                    transportDidRun = true
+                    transportRenderedPast = transport.writeAndRender(
+                        interleavedStereo: outputSamples, frameCount: frameCount)
+                }
+            }
+
             // Per-app AU effect chain (spec §2.4) — after EQ, before device correction.
             // Same stereo-interleaved gate as EQ; non-stereo taps bypass exactly as today.
             if let auChain, eqCanProcessStereoInterleaved {
@@ -1524,6 +1571,44 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
             let writtenSampleCount = frameCount * outputChannels
             SoftLimiter.processBuffer(outputSamples, sampleCount: writtenSampleCount)
         }
+    }
+
+    /// Zeroes every output buffer and keeps the tape timeline continuous (E21).
+    /// User mute and `_forceSilence` both return early without rendering, so the ring
+    /// would stop advancing and a rewind across the muted span would splice the two
+    /// sides together. Writing silence instead keeps ring time == callback time.
+    /// The transport is passed only in the primary role (E17), so this writes once.
+    @inline(__always)
+    nonisolated static func silenceOutput(
+        _ outputBuffers: UnsafeMutableAudioBufferListPointer,
+        transport: TapeTransportRT?
+    ) {
+        var frameCount = 0
+        for buf in outputBuffers {
+            guard let data = buf.mData else { continue }
+            let channels = max(1, Int(buf.mNumberChannels))
+            let frames = Int(buf.mDataByteSize) / MemoryLayout<Float>.size / channels
+            if frames > frameCount { frameCount = frames }
+            memset(data, 0, Int(buf.mDataByteSize))
+        }
+        transport?.writeSilence(frameCount: frameCount)
+    }
+
+    /// Peak the VU meter and the output gate should follow (E19). While the tape plays
+    /// the past, the live input is often dead silent — the meter would flatline and the
+    /// gate would accumulate silence, re-arm, and fade the recording to zero underneath
+    /// the playback. Substituting the tape's own output peak fixes both.
+    ///
+    /// The transport renders later in this same callback, so the value read here is the
+    /// PREVIOUS callback's output — one buffer of lag, far under the meter's smoothing
+    /// and the gate's 200 ms silence hold, and the only RT-safe ordering available: the
+    /// gate multiplier is an input to the gain stage that runs before the ring write.
+    @inline(__always)
+    nonisolated static func audibleInputPeak(livePeak: Float, transport: TapeTransportRT?) -> Float {
+        guard let transport else { return livePeak }
+        let diagnostics = transport.diagnosticsSnapshot()
+        guard !diagnostics.isPinnedToLive else { return livePeak }
+        return min(diagnostics.lastOutputPeak, 1.0)
     }
 
     // MARK: - RT-Safe Audio Callback (DO NOT MODIFY WITHOUT RT-SAFETY REVIEW)
@@ -1570,12 +1655,15 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
         // and valid for callback duration.
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))
 
+        // Tape transport is primary-role only (E17), exactly like the AU chain: two
+        // concurrent writers of the ring and read-head state is a data race in our own
+        // code, and a second writer would double-record every frame.
+        let transport = isPrimary ? tapeTransport : nil
+
         // Force silence — primary only. During destructive device switch,
         // _forceSilence is set before the old IO proc is torn down.
         if isPrimary && _forceSilence {
-            for buf in outputBuffers {
-                if let data = buf.mData { memset(data, 0, Int(buf.mDataByteSize)) }
-            }
+            Self.silenceOutput(outputBuffers, transport: transport)
             return
         }
 
@@ -1596,9 +1684,12 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
             }
         }
         let rawPeak = min(maxPeak, 1.0)
+        // E19: the meter and the gate must follow what is audible, which is the tape's
+        // output whenever the transport is playing the past.
+        let audiblePeak = Self.audibleInputPeak(livePeak: rawPeak, transport: transport)
 
         if isPrimary {
-            _peakLevel = _peakLevel + levelSmoothingFactor * (rawPeak - _peakLevel)
+            _peakLevel = _peakLevel + levelSmoothingFactor * (audiblePeak - _peakLevel)
         } else {
             _secondaryPeakLevel = _secondaryPeakLevel + levelSmoothingFactor * (rawPeak - _secondaryPeakLevel)
             // Only the secondary callback advances crossfade progress (single-writer pattern).
@@ -1612,7 +1703,7 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
         // a fresh activate(initial:) and so resets gate state.
         let outputGateMultiplier: Float
         if isPrimary {
-            let gateInputPeak: Float = _isMuted ? 0.0 : rawPeak
+            let gateInputPeak: Float = _isMuted ? 0.0 : audiblePeak
             outputGateMultiplier = Self.advanceOutputGate(
                 phase: &_outputGateRawPhase,
                 progress: &_outputGateProgress,
@@ -1628,9 +1719,7 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
         }
 
         if _isMuted {
-            for buf in outputBuffers {
-                if let data = buf.mData { memset(data, 0, Int(buf.mDataByteSize)) }
-            }
+            Self.silenceOutput(outputBuffers, transport: transport)
             return
         }
 
@@ -1693,7 +1782,8 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting {
             autoEQProc: autoEQProc,
             loudnessEqualizerProc: loudnessEqualizerProc,
             loudnessCompensatorProc: loudnessCompensatorProc,
-            auChain: auChain
+            auChain: auChain,
+            transport: transport
         )
 
         if isPrimary {

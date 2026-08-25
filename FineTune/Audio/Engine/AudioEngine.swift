@@ -27,6 +27,11 @@ final class AudioEngine {
     /// disposable (device switch, health recreate, sleep/wake) — spec §2.1.
     let auChainManager: AUChainManager
 
+    /// Owns one tape ring per app identifier. Same reason as the chain: rings are
+    /// expensive and long-lived, taps are disposable — Phase 2 §2.1. The two layers are
+    /// independent; they only share the tap events that create and re-rate a tap.
+    let tapeTransportManager: TapeTransportManager
+
     /// Factory for creating tap controllers. Overridable for testing.
     private let tapFactory: @MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling
 
@@ -193,6 +198,7 @@ final class AudioEngine {
         self.autoEQProfileManager = autoEQProfileManager
         self.volumeState = VolumeState(settingsManager: manager)
         self.auChainManager = AUChainManager(settingsManager: manager)
+        self.tapeTransportManager = TapeTransportManager(settingsManager: manager)
         self.isAliveCheck = isAlive ?? { $0.isDeviceAlive() }
 
         // If a custom deviceProvider is given, use it directly.
@@ -475,8 +481,10 @@ final class AudioEngine {
         if let tap = taps.removeValue(forKey: app.id) {
             tap.invalidate()
         }
-        // App left the list: capture state, close windows, release instances (E10).
+        // App left the list: capture state, close windows, release instances (E10),
+        // free the tape ring (Phase 2 E29).
         auChainManager.release(identifier: app.persistenceIdentifier)
+        tapeTransportManager.release(identifier: app.persistenceIdentifier)
         appDeviceRouting.removeValue(forKey: app.id)
         followsDefault.remove(app.id)
         appliedPIDs.remove(app.id)
@@ -887,13 +895,25 @@ final class AudioEngine {
 
     // MARK: - AU Effect Chains
 
-    /// Hands a freshly created tap to the chain manager (spec §2.6, E14). Called from both
-    /// tap-creation paths, so health-recreate, sleep/wake and applyPersistedSettings all
-    /// inherit the chain. The chain builds asynchronously — the tap runs chain-less until
-    /// the render state arrives, exactly like the async AutoEQ resolve above.
-    private func attachAUChain(to tap: any ProcessTapControlling) {
+    /// Hands a freshly created tap to both per-app render layers (spec §2.6, E14 /
+    /// Phase 2 E32). Called from both tap-creation paths, so health-recreate, sleep/wake
+    /// and applyPersistedSettings all inherit the chain and the tape. Both build
+    /// asynchronously — the tap runs without them until the pointers arrive, exactly like
+    /// the async AutoEQ resolve above.
+    ///
+    /// The chain and transport layers are independent (Phase 2 §2.1); this is only the
+    /// tap event they share.
+    private func attachRenderLayers(to tap: any ProcessTapControlling) {
         guard let host = tap as? AUChainHosting, let rate = host.nominalSampleRate else { return }
         auChainManager.attach(to: host, identifier: tap.app.persistenceIdentifier, sampleRate: rate, appName: tap.app.name)
+        if let transportHost = tap as? TapeTransportHosting {
+            tapeTransportManager.attach(
+                to: transportHost,
+                identifier: tap.app.persistenceIdentifier,
+                sampleRate: rate,
+                appName: tap.app.name
+            )
+        }
     }
 
     /// The Effects panel's mutation entry point. Creates the app's chain on demand and
@@ -902,7 +922,7 @@ final class AudioEngine {
     /// A pinned-inactive app has no tap: its chain persists and comes up when one appears.
     func editableAUChain(for identifier: String, appName: String) -> AppAUChain {
         let chain = auChainManager.editableChain(for: identifier, appName: appName)
-        attachAUChain(for: identifier)
+        attachRenderLayers(for: identifier)
         return chain
     }
 
@@ -910,21 +930,35 @@ final class AudioEngine {
     /// did not exist (explicitly-empty custom chain) picks the default up immediately.
     func resetAUChainToDefault(for identifier: String) {
         auChainManager.resetToDefault(identifier: identifier)
-        attachAUChain(for: identifier)
+        attachRenderLayers(for: identifier)
     }
 
     /// Re-attach by identifier. No-op when the app has no live tap.
-    private func attachAUChain(for identifier: String) {
+    private func attachRenderLayers(for identifier: String) {
         guard let tap = taps.values.first(where: { $0.app.persistenceIdentifier == identifier }) else { return }
-        attachAUChain(to: tap)
+        attachRenderLayers(to: tap)
     }
 
-    /// Re-rates an app's chain after any path that can land its tap on a different device
-    /// rate (destructive switch, A2DP↔SCO). The manager compares against the published
-    /// state's `builtSampleRate` and rebuilds only on mismatch (spec §2.6).
-    private func auChainRateChanged(for tap: any ProcessTapControlling) {
+    // MARK: - Tape Transports
+
+    /// The Tape panel's (and the debug URL scheme's) mutation entry point — the transport
+    /// counterpart of `editableAUChain`. Creates the app's transport on demand and binds
+    /// it to the live tap, so a tape armed from the UI starts recording at once; the
+    /// tap-creation attach has long since run and would not fire again.
+    func editableTapeTransport(for identifier: String, appName: String) -> AppTapeTransport {
+        let transport = tapeTransportManager.editableTransport(for: identifier, appName: appName)
+        attachRenderLayers(for: identifier)
+        return transport
+    }
+
+    /// Re-rates an app's render layers after any path that can land its tap on a different
+    /// device rate (destructive switch, A2DP↔SCO). Both managers compare against their own
+    /// built rate and rebuild only on mismatch (spec §2.6 / Phase 2 §3-Q6). A real rate
+    /// change discards the tape — the recorded frames are in old-rate time (E22).
+    private func renderLayersRateChanged(for tap: any ProcessTapControlling) {
         guard let host = tap as? AUChainHosting, let rate = host.nominalSampleRate else { return }
         auChainManager.rateChanged(identifier: tap.app.persistenceIdentifier, newRate: rate)
+        tapeTransportManager.rateChanged(identifier: tap.app.persistenceIdentifier, newRate: rate)
     }
 
     /// Sets the system default output device, routes followsDefault apps, and registers
@@ -994,7 +1028,7 @@ final class AudioEngine {
                     try await tap.switchDevice(to: targetUID, preferredTapSourceDeviceUID: preferredTapSourceUID)
                     self.applyTapOutputState(to: tap, for: app.id, deviceUIDs: [targetUID])
                     self.applyAutoEQToTap(tap)
-                    self.auChainRateChanged(for: tap)
+                    self.renderLayersRateChanged(for: tap)
                     self.logger.debug("Switched \(app.name) to device: \(targetUID)")
                 } catch {
                     self.logger.error("Failed to switch device for \(app.name): \(error.localizedDescription)")
@@ -1087,7 +1121,7 @@ final class AudioEngine {
                     let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs, isFollowsDefault: followsDefault.contains(app.id))
                     try await tap.updateDevices(to: deviceUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID)
                     applyTapOutputState(to: tap, for: app.id, deviceUIDs: deviceUIDs)
-                    auChainRateChanged(for: tap)
+                    renderLayersRateChanged(for: tap)
                     logger.debug("Updated \(app.name) to \(deviceUIDs.count) device(s)")
                 } catch {
                     logger.error("Failed to update devices for \(app.name): \(error.localizedDescription)")
@@ -1123,7 +1157,7 @@ final class AudioEngine {
                 applyAutoEQToTap(tap)
             }
 
-            attachAUChain(to: tap)
+            attachRenderLayers(to: tap)
 
             logger.debug("Created tap for \(app.name) on \(deviceUIDs.count) device(s)")
         } catch {
@@ -1234,7 +1268,7 @@ final class AudioEngine {
                         try await existingTap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: preferredSource)
                         self.applyTapOutputState(to: existingTap, for: app.id, deviceUIDs: [deviceUID])
                         self.applyAutoEQToTap(existingTap)
-                        self.auChainRateChanged(for: existingTap)
+                        self.renderLayersRateChanged(for: existingTap)
                     } catch {
                         self.logger.error("Failed to re-route \(app.name) to \(deviceUID): \(error.localizedDescription)")
                     }
@@ -1288,7 +1322,7 @@ final class AudioEngine {
                 applyAutoEQToTap(tap)
             }
 
-            attachAUChain(to: tap)
+            attachRenderLayers(to: tap)
 
             logger.debug("Created tap for \(app.name)")
         } catch {
@@ -1382,7 +1416,7 @@ final class AudioEngine {
                     try await tap.switchDevice(to: targetUID, preferredTapSourceDeviceUID: preferredTapSourceUID)
                     self.applyTapOutputState(to: tap, for: app.id, deviceUIDs: [targetUID])
                     self.applyAutoEQToTap(tap)
-                    self.auChainRateChanged(for: tap)
+                    self.renderLayersRateChanged(for: tap)
                 } catch {
                     self.logger.error("Failed to switch \(app.name) to \(targetUID): \(error.localizedDescription)")
                 }
@@ -1463,7 +1497,7 @@ final class AudioEngine {
                         try await tap.switchDevice(to: fallbackUID, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [fallbackUID])
                         self.applyAutoEQToTap(tap)
-                        self.auChainRateChanged(for: tap)
+                        self.renderLayersRateChanged(for: tap)
                     } catch {
                         self.logger.error("Failed to switch \(tap.app.name) to fallback: \(error.localizedDescription)")
                     }
@@ -1476,7 +1510,7 @@ final class AudioEngine {
                         let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: remainingUIDs, isFollowsDefault: self.followsDefault.contains(tap.app.id))
                         try await tap.updateDevices(to: remainingUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: remainingUIDs)
-                        self.auChainRateChanged(for: tap)
+                        self.renderLayersRateChanged(for: tap)
                         self.logger.debug("Removed \(deviceName) from \(tap.app.name) multi-device output")
                     } catch {
                         self.logger.error("Failed to update \(tap.app.name) devices: \(error.localizedDescription)")
@@ -1537,7 +1571,7 @@ final class AudioEngine {
                         try await tap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: preferredTapSourceUID)
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [deviceUID])
                         self.applyAutoEQToTap(tap)
-                        self.auChainRateChanged(for: tap)
+                        self.renderLayersRateChanged(for: tap)
                     } catch {
                         self.logger.error("Failed to switch \(tap.app.name) back to \(deviceName): \(error.localizedDescription)")
                     }
@@ -1861,6 +1895,13 @@ final class AudioEngine {
         return outputUIDs.contains(defaultUID) ? defaultUID : nil
     }
 
+    /// E20 pin: true while the app's tape is playing the past, which makes the app
+    /// audible for idle-teardown purposes even though its process has stopped streaming.
+    private func isTapeTransportEngaged(pid: pid_t) -> Bool {
+        guard let tap = taps[pid] else { return false }
+        return tapeTransportManager.isEngaged(identifier: tap.app.persistenceIdentifier)
+    }
+
     private func cleanupStaleTaps() {
         let activePIDs = Set(apps.map { $0.id })
         let stalePIDs = Set(taps.keys).subtracting(activePIDs)
@@ -1895,6 +1936,11 @@ final class AudioEngine {
         // Schedule cleanup for newly stale PIDs (with grace period)
         for pid in stalePIDs {
             guard pendingCleanup[pid] == nil else { continue }  // Already pending
+            // E20: an engaged (non-live) transport is the user actively listening to the
+            // past. The app going quiet is exactly when rewind gets used, so a stale PID
+            // with an engaged tape is "audible" and its tap must survive. It becomes
+            // collectable again on the next sweep after the user returns to live.
+            guard !self.isTapeTransportEngaged(pid: pid) else { continue }
 
             pendingCleanup[pid] = Task { @MainActor in
                 try? await Task.sleep(for: .seconds(30))
@@ -1906,13 +1952,19 @@ final class AudioEngine {
                     self.pendingCleanup.removeValue(forKey: pid)
                     return
                 }
+                // E20 again: the tape may have been engaged during the 30 s grace.
+                guard !self.isTapeTransportEngaged(pid: pid) else {
+                    self.pendingCleanup.removeValue(forKey: pid)
+                    return
+                }
 
                 // Now safe to cleanup
                 if let tap = self.taps.removeValue(forKey: pid) {
                     tap.invalidate()
                     // App left the list: capture state, close windows, release the AU
-                    // instances — spec §2.6 / E10.
+                    // instances — spec §2.6 / E10 — and free the tape ring (Phase 2 E29).
                     self.auChainManager.release(identifier: tap.app.persistenceIdentifier)
+                    self.tapeTransportManager.release(identifier: tap.app.persistenceIdentifier)
                     self.logger.debug("Cleaned up stale tap for PID \(pid)")
                 }
                 self.appDeviceRouting.removeValue(forKey: pid)
@@ -2053,7 +2105,7 @@ final class AudioEngine {
             do {
                 logger.info("[RATE] Recreating tap for PID \(pid)")
                 try await tap.recreateForOutputRateChange()
-                auChainRateChanged(for: tap)
+                renderLayersRateChanged(for: tap)
             } catch {
                 logger.error("[RATE] Recreate failed for PID \(pid): \(error.localizedDescription) — falling back to full recreate")
                 await recreateTap(for: pid)
