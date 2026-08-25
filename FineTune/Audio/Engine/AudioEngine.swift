@@ -896,6 +896,29 @@ final class AudioEngine {
         auChainManager.attach(to: host, identifier: tap.app.persistenceIdentifier, sampleRate: rate, appName: tap.app.name)
     }
 
+    /// The Effects panel's mutation entry point. Creates the app's chain on demand and
+    /// binds it to the live tap, so a plugin added from the UI starts rendering at once —
+    /// the tap-creation attach (§2.6) has long since run and would not fire again.
+    /// A pinned-inactive app has no tap: its chain persists and comes up when one appears.
+    func editableAUChain(for identifier: String, appName: String) -> AppAUChain {
+        let chain = auChainManager.editableChain(for: identifier, appName: appName)
+        attachAUChain(for: identifier)
+        return chain
+    }
+
+    /// "Use Default Chain" (§5.2). Re-attaches afterwards so an app whose chain object
+    /// did not exist (explicitly-empty custom chain) picks the default up immediately.
+    func resetAUChainToDefault(for identifier: String) {
+        auChainManager.resetToDefault(identifier: identifier)
+        attachAUChain(for: identifier)
+    }
+
+    /// Re-attach by identifier. No-op when the app has no live tap.
+    private func attachAUChain(for identifier: String) {
+        guard let tap = taps.values.first(where: { $0.app.persistenceIdentifier == identifier }) else { return }
+        attachAUChain(to: tap)
+    }
+
     /// Re-rates an app's chain after any path that can land its tap on a different device
     /// rate (destructive switch, A2DP↔SCO). The manager compares against the published
     /// state's `builtSampleRate` and rebuilds only on mismatch (spec §2.6).

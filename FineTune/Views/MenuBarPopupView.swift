@@ -924,7 +924,7 @@ struct MenuBarPopupView: View {
                     toggleEQ(for: displayableApp.id, scrollProxy: scrollProxy)
                 },
                 isFocused: hasKeyboardEngaged && selectedRow == .app(persistenceID: displayableApp.id),
-                auChain: auChainModel(for: displayableApp.id)
+                auChain: auChainModel(for: displayableApp.id, appName: displayableApp.displayName)
             )
             .id(PopupKeyboardNavModel.RowID.app(persistenceID: displayableApp.id))
         }
@@ -992,15 +992,10 @@ struct MenuBarPopupView: View {
             onEQToggle: {
                 toggleEQ(for: displayableApp.id, scrollProxy: scrollProxy)
             },
-            isFocused: hasKeyboardEngaged && selectedRow == .app(persistenceID: displayableApp.id)
+            isFocused: hasKeyboardEngaged && selectedRow == .app(persistenceID: displayableApp.id),
+            auChain: auChainModel(for: identifier, appName: displayableApp.displayName)
         )
         .id(PopupKeyboardNavModel.RowID.app(persistenceID: displayableApp.id))
-    }
-
-    /// View state for an app's Effects panel. T8 populates this from
-    /// `AUChainManager`; until then every app renders an empty chain.
-    private func auChainModel(for persistenceID: String) -> AUChainPanelModel {
-        AUChainPanelModel()
     }
 
     /// Toggle EQ panel for an app (shared between active and inactive rows)

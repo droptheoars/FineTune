@@ -37,8 +37,10 @@ struct InactiveAppRow: View {
     let isEQExpanded: Bool
     let onEQToggle: () -> Void
     let isFocused: Bool
+    let auChain: AUChainPanelModel
 
     @State private var localEQSettings: EQSettings
+    @State private var panelMode: AppPanelMode = .eq
 
     init(
         appInfo: PinnedAppInfo,
@@ -69,7 +71,8 @@ struct InactiveAppRow: View {
         onRenameUserPreset: @escaping (UUID, String) -> Void = { _, _ in },
         isEQExpanded: Bool = false,
         onEQToggle: @escaping () -> Void = {},
-        isFocused: Bool = false
+        isFocused: Bool = false,
+        auChain: AUChainPanelModel = AUChainPanelModel()
     ) {
         self.appInfo = appInfo
         self.icon = icon
@@ -100,6 +103,7 @@ struct InactiveAppRow: View {
         self.isEQExpanded = isEQExpanded
         self.onEQToggle = onEQToggle
         self.isFocused = isFocused
+        self.auChain = auChain
         self._localEQSettings = State(initialValue: eqSettings)
     }
 
@@ -167,29 +171,43 @@ struct InactiveAppRow: View {
             .frame(height: DesignTokens.Dimensions.rowContentHeight)
             .opacity(0.6)
         } expandedContent: {
-            // EQ panel
-            EQPanelView(
-                settings: $localEQSettings,
-                userPresets: userPresets,
-                onPresetSelected: { preset in
-                    localEQSettings = preset.settings
-                    onEQChange(preset.settings)
-                },
-                onUserPresetSelected: { userPreset in
-                    localEQSettings = userPreset.settings
-                    onUserPresetSelected(userPreset)
-                },
-                onSettingsChanged: { settings in
-                    onEQChange(settings)
-                },
-                onSavePreset: onSavePreset,
-                onDeleteUserPreset: onDeleteUserPreset,
-                onRenameUserPreset: onRenameUserPreset
-            )
+            // EQ | Effects switch, then the selected panel (§5.1). An inactive app
+            // has no tap, so its chain is configuration only until it plays.
+            VStack(spacing: DesignTokens.Spacing.xs) {
+                ModeToggle(mode: $panelMode, options: [(.eq, "EQ"), (.effects, "Effects")])
+                    .frame(width: 180)
+
+                if panelMode == .eq {
+                    eqPanel
+                } else {
+                    AUChainPanelView(model: auChain)
+                }
+            }
             .padding(.top, DesignTokens.Spacing.sm)
         }
         .onChange(of: eqSettings) { _, newValue in
             localEQSettings = newValue
         }
+    }
+
+    private var eqPanel: some View {
+        EQPanelView(
+            settings: $localEQSettings,
+            userPresets: userPresets,
+            onPresetSelected: { preset in
+                localEQSettings = preset.settings
+                onEQChange(preset.settings)
+            },
+            onUserPresetSelected: { userPreset in
+                localEQSettings = userPreset.settings
+                onUserPresetSelected(userPreset)
+            },
+            onSettingsChanged: { settings in
+                onEQChange(settings)
+            },
+            onSavePreset: onSavePreset,
+            onDeleteUserPreset: onDeleteUserPreset,
+            onRenameUserPreset: onRenameUserPreset
+        )
     }
 }

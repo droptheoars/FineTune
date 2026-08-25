@@ -248,12 +248,15 @@ struct FineTuneApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, monitor, accessibilityService, hud, coordinator] _ in
+        ) { [settings, monitor, accessibilityService, hud, coordinator, engine] _ in
             MainActor.assumeIsolated {
                 coordinator.stop()
                 monitor.stop()
                 accessibilityService.stop()
                 hud.shutdown()
+                // Outstanding plugin `fullState` must land in settings BEFORE the
+                // settings flush writes them out (spec §4, E4).
+                engine.auChainManager.flushSync()
                 settings.flushSync()
             }
         }
