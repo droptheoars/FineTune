@@ -73,3 +73,38 @@ Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
 
 ## Session log
 - 2026-08-25: Forked, cloned, remotes wired (origin=droptheoars, upstream=ronitsingh10). Xcode 26.6 + dev signing identity confirmed present. Brainstorm → roadmap approved. Phase 1 spec dispatched to Fable.
+
+---
+
+## Phase 1 build log (session 2026-08-25)
+
+**Environment findings (T0 baseline)**
+- Upstream project ships empty `DEVELOPMENT_TEAM` + manual Developer ID signing → plain
+  `xcodebuild build` fails locally. Gate is now `scripts/dev-test.sh [build|test]`
+  (adds Apple Development signing, team R6GT8Z86AD, `DERIVED_DATA` override for parallel agents).
+- `FineTuneUITests` target is an empty stub that cannot load (pre-existing upstream defect,
+  no source directory). Gate runs `-only-testing:FineTuneTests`.
+- T0 baseline: build SUCCEEDED, FineTuneTests SUCCEEDED. Clean start confirmed.
+- Xcode uses file-system-synchronized groups → new .swift files need no pbxproj edits.
+- Acceptance plugins confirmed installed: RC-20 Retro Color (AUv2), Cassette (AUv2, present in
+  BOTH /Library and ~/Library → picker must dedupe by component triple).
+- **Settings-file collision**: dev build shares bundle ID + settings.json with installed v1.9.0.
+  Running 1.9.0 after a v13 save re-writes the file as v12 and drops AU chains.
+  Live v12 settings backed up to the session scratchpad before any build ran.
+
+**Task status**
+- [x] T0 baseline
+- [ ] T1 models + persistence (Sonnet) — dispatched
+- [ ] T2 AUChainRenderState (Fable) — dispatched
+- [ ] T3 AppAUChain + AUChainManager (Opus)
+- [ ] T4 RT integration (Opus)
+- [ ] T5 effects panel UI (Sonnet)
+- [ ] T6 plugin picker (Sonnet)
+- [ ] T7 plugin window controller (Opus)
+- [ ] T8 end-to-end wiring (Opus)
+- [ ] T9 Fable adversarial review of T2+T4 RT diff
+
+**Decisions taken during build**
+- D1: `ModeToggle` is hard-bound to `DeviceSelectionMode`. T5 may generalize it ONLY if no
+  existing call site changes; otherwise a local segmented control in the new panel file,
+  visually identical. Spec §5.1's intent is visual consistency, not literal reuse.
