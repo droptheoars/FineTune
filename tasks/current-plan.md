@@ -101,8 +101,29 @@ Per-app ring buffer (opt-in; ~23 MB/min/app full quality) enabling:
 - [x] T5 effects panel UI (Sonnet) — 940c8be
 - [x] T6 plugin picker (Sonnet) — 940c8be, curated group applied
 - [x] T7 plugin window controller (Opus) — 1f94839
-- [ ] T8 end-to-end wiring (Opus)
-- [ ] T9 Fable adversarial review of T2+T4 RT diff
+- [ ] T8 end-to-end wiring (Opus) — built, gate green, report outstanding
+- [x] T9 Fable adversarial review — DONE. 1 Critical, 2 Important, 6 nits.
+
+**T9 review outcome (2026-08-25)**
+- **F1 CRITICAL (merge blocker, being fixed)**: `rebuildInstances` deallocates all units up
+  front but `rateChanged` leaves every slot `.ready`, and `rebuildRenderState` has no
+  generation guard — so the first slot to finish re-allocating publishes a render state
+  still containing the OTHER slots' deallocated render blocks. Deterministic on any device
+  switch / A2DP-SCO transition with 2+ plugins. Effects: whole chain goes SILENT (not dry)
+  for the re-alloc duration; nanStrikes accrue ~94/sec so a healthy slot gets spuriously
+  auto-bypassed past ~1.1s; and `allocateRenderResources` runs concurrently with RT render
+  inside third-party code — the exact UAF class E15 exists to prevent.
+  **Zero test coverage of rateChanged/rebuildInstances existed** — this passed 3 green runs.
+- **F2 Important**: NodeRTBox protects 28 bytes of counters against a retained-pull-block
+  scenario while leaving the 64KB of scratch the same scenario would touch unprotected.
+  Either the hedge is unnecessary or it is insufficient; the inconsistency is the finding.
+- **F3 Important**: E1 once-per-callback logic untested despite ProcessingPipelineTests
+  already having a multi-buffer harness. Green suite proving less than it appears to.
+- Confirmed-correct: E1 logic itself, E15 on all direct paths (tests genuinely prove it via
+  timestamped ordering, not theater), promotion gate + one-buffer tear bound, pull-block
+  ping-pong aliasing, RT-safety sweep clean, KVC+unsafeBitCast sound on current ABI.
+- Nits N1-N6 recorded in the review; N2 (unbounded pendingTasks) and N4 (nil rate read skips
+  the stale guard) routed to T3 with the F1 fix.
 
 **Findings during build (carry into T9's review packet)**
 - F1: Swift's bridged `au.renderBlock` allocates 1 malloc per render (measured vs real AUDelay).
