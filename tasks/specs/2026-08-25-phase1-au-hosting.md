@@ -1,6 +1,7 @@
 # Phase 1 — Audio Unit Hosting Spec
 
-**Date**: 2026-08-25 · **Author**: Fable (architecture pass) · **Status**: Ready for build
+**Date**: 2026-08-25 · **Author**: Fable (architecture pass) · **Status**: In build
+**Amendments during build**: §2.5 configuring gains the input-bus enable (T2 finding). §5.3 picker gains a curated `For listening` group pinned above `All effects` (Erik, 2026-08-25).
 **Scope**: Per-app AU effect chains (AUv2 + AUv3) inserted into the existing per-tap DSP pipeline.
 **Locked upstream decisions honored**: app chain replaces default; chain UI in expanded app row; in-process hosting; SoftLimiter last; AU fullState persistence; floating real plugin windows; no new dependencies; plugin crash takes app down (v1).
 
@@ -106,7 +107,7 @@ any ──remove──▶ released (fullState captured first if ready)
 ```
 
 - **instantiating**: `AUAudioUnit.instantiate(with: desc, options: [.loadInProcess])`; on failure retry once with `[]` (lets an in-process-refusing AUv3 fall back to Apple's extension process — this keeps the *architecture* in-process for everything that supports it, which is all AUv2 in an unsandboxed host, while not hard-failing strict AUv3s; their render blocks are still RT-callable). Component not found → `failed(.missing)`, slot kept in order, blob kept (§E).
-- **configuring** (builder queue): set `maximumFramesToRender = 4096` **before** allocation; set input/output bus formats to `AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)` (deinterleaved Float32 — the canonical format every AU must accept); restore `fullState` if a blob exists (plist-decoded, §5). Format set throws → `failed(.formatRefused)`. State restore throws → plugin continues with defaults, badge, `failed` is NOT entered (audio still works) — slot is `ready` with `stateRestoreFailed` flag for the UI.
+- **configuring** (builder queue): set `maximumFramesToRender = 4096` **before** allocation; set `au.inputBusses[0].isEnabled = true` **before** allocation (found empirically during T2 — without it every render returns `kAudioUnitErr_NoConnection` (-10876), the pull block is never invoked, and the chain silently passes no audio while reporting ready); set input/output bus formats to `AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)` (deinterleaved Float32 — the canonical format every AU must accept); restore `fullState` if a blob exists (plist-decoded, §5). Format set throws → `failed(.formatRefused)`. State restore throws → plugin continues with defaults, badge, `failed` is NOT entered (audio still works) — slot is `ready` with `stateRestoreFailed` flag for the UI.
 - **allocating** (builder queue): `allocateRenderResources()`, watchdog 5s (§E). Then capture `renderBlock` once.
 - **ready**: participates in render-state builds.
 
