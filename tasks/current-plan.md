@@ -106,6 +106,63 @@ Build order T0-T10 with tiers and gates is in the spec. HEAR-IT-EARLY checkpoint
 - Built-in tape character emulation: rejected — RC-20/Cassette via AU chain do it better.
 - Generative ambient synth (OB-4 meditate literal clone): rejected — different project.
 
+## Phase 2 build log (session 2026-08-25, continued)
+
+**Erik's UI decisions (2026-08-25, interview loop)**
+- Transport strip ALWAYS VISIBLE on a tape-enabled app row (permanent +26pt height accepted).
+- Scrub = drag the bar. No jog buttons.
+- Stop = tape brake (ramp to halt), not instant silence.
+- Loop grab = last 10 seconds, edges draggable after.
+- Deliberate controls (enable, ring length, speed, keep-pitch, save) live in a third
+  `Tape` segment of the EQ | Effects toggle.
+- Deferred by default, one-line reversals: no menu-bar icon change while behind live;
+  no UI for reverse play (RT supports it); E18 pitch-snap kept until heard.
+
+**Task status**
+- [x] T1 badge split (Sonnet) — 28f1ac4
+- [x] T2 settings v14 (Sonnet) — bc88804, plus 9b803d7 removing the hand-maintained
+      CodingKeys footgun (orchestrator-requested simplification)
+- [x] T3 TapeTransportRT keystone (Fable) — 2ca7aea, 13 tests, 14 mutations verified
+- [ ] T4 AppTapeTransport + TapeTransportManager (Opus) — running
+- [ ] T5 RT integration (Opus) — queued behind T4
+- [ ] T6 TapeExporter (Opus) — queued
+- [x] T8 transport UI (Sonnet) — b0fb2ae, 25 tests, 9 previews matching the mockup
+- [ ] T9 end-to-end wiring (Opus) — queued
+- [ ] T10 Fable adversarial review of the RT diff — queued
+- Mockup + buildable UI spec: 8dc1675
+
+**T3 deviations from spec, accepted (T10 must scrutinize)**
+- LIVE-side crossfade uses the CALLER'S buffer, not a ring read. Spec §2.3 said both sides
+  read from the ring, but the ring's live edge is only readable to writeFrames-4 (E26), so a
+  ring-read live side pins with a 4-frame waveform jump (a click on every return to live).
+  Fading against the incoming buffer makes the hand-off bit-exact. Spec wording is wrong here.
+- E18 is SKIP-FREE by construction (guard zone forces effective rate 1.0 within
+  horizonGuardFrames of the trailing edge) rather than clamp-then-force, which would skip
+  (1-r)*N frames per callback — the jump-cut signature the spec bans.
+- Stop-fade added: output gain ramps to zero below |rate| < 0.05, because a stopped
+  interpolator holds the DC value of its last sample. Not in the spec; audible if omitted.
+- Jumps are atomic (a pending command waits for the active fade), so scrub streams coalesce
+  into back-to-back 20ms hops instead of clicking mid-fade.
+- Auto-pin-to-live at r>1 is suppressed while a loop is active.
+
+**T3 invariants a later task could unknowingly break**
+(a) `writeAndRender` at most once per HAL callback, primary role only (no internal lock).
+(b) `copyLastOutput` only when `writeAndRender` returned true, same callback.
+(c) Command setters are single-publisher (MainActor); a second publisher breaks the seqlock.
+(d) `horizonGuardFrames` must exceed the largest HAL callback or E18 stops being skip-free.
+(e) T5 must route mute/`_forceSilence` through `writeSilence` or the timeline tears (E21).
+
+**Environment finding (2026-08-25 evening)**
+Disk hit 100% (341 MB free of 460 GB) mid-build; ~16 GB of it is Claude session
+derived-data scratch under /private/tmp/claude-501. Both the agent and the orchestrator are
+denied `rm`, so cleanup needs Erik. Mitigation in use: agents share one derived-data dir
+(dd-t8) for incremental builds, and mutation-verification runs in a tiny isolated SwiftPM
+package in the scratchpad instead of a full repo clone (T3's adaptation, ~seconds per run).
+
+**Test-count convention**: report `totalTestCount` from `xcrun xcresulttool get test-results
+summary`, not eyeballed streamed output. The tree had 854 @Test methods at T3; an earlier
+"1034" was an invocation-style count and caused a false alarm.
+
 ## Phase 2 open decisions for Erik
 - D3: Accept the Q7 gate (hear tests 5+7 before T5 merges)?
 - D4: Open the Phase 1 PR now (body in tasks/PR-BODY.md, SHA needs refresh)?
