@@ -123,12 +123,31 @@ Build order T0-T10 with tiers and gates is in the spec. HEAR-IT-EARLY checkpoint
 - [x] T2 settings v14 (Sonnet) — bc88804, plus 9b803d7 removing the hand-maintained
       CodingKeys footgun (orchestrator-requested simplification)
 - [x] T3 TapeTransportRT keystone (Fable) — 2ca7aea, 13 tests, 14 mutations verified
-- [ ] T4 AppTapeTransport + TapeTransportManager (Opus) — running
-- [ ] T5 RT integration (Opus) — queued behind T4
-- [ ] T6 TapeExporter (Opus) — queued
+- [x] T4 AppTapeTransport + TapeTransportManager (Opus) — c94966f, 17 tests.
+      Committed WITHOUT a report; orchestrator audited the disable ordering by hand and
+      confirmed publish-nil -> grace -> free with an ordering test that asserts the ring is
+      still alive when the grace runs. Mutation-verification NOT confirmed — routed to T10.
+- [x] T5 RT integration (Opus) — de82d54. E16 twin flags, E17 primary-only, E19 meter+gate
+      substitution, E21 writeSilence on mute/forceSilence, E20 engaged-counts-as-audible,
+      debug URL scheme (`finetune://tape?app=...&enable|rewind|rate|live|export|status`).
+- [x] T6 TapeExporter (Opus) — 3dfb9ff, WAV/Float32 to ~/Music/FineTune.
 - [x] T8 transport UI (Sonnet) — b0fb2ae, 25 tests, 9 previews matching the mockup
-- [ ] T9 end-to-end wiring (Opus) — queued
-- [ ] T10 Fable adversarial review of the RT diff — queued
+- [x] T9 end-to-end wiring (Opus) — 294c8c3, plus the Phase 2 manual listening checklist
+      (HEAR-IT-EARLY minimum marked inside it).
+- [ ] T10 Fable adversarial review of the RT diff — running
+
+**Orchestrator-verified gate (not self-reported)**: full suite on the integrated tree at
+294c8c3 — exit 0, 1138 test cases passed, 0 failed.
+
+**Known gap, deliberately not built**: `InactiveAppRow` gets no tape model, so a pinned but
+silent app shows no transport strip. Rationale: with no tap there is no ring and the strip
+would be showing a dead transport. Arming still persists per app from the active row. T10
+was asked to rule whether this is a correctness problem or only a UI gap.
+
+**Process finding**: four of six builder agents committed without reporting despite explicit
+briefs. Mitigation used: orchestrator audits the commit by reading the code and runs its own
+authoritative gate rather than trusting a silent commit. Worth tightening the builder brief
+next phase — a commit without a report should be treated as unverified by default.
 - Mockup + buildable UI spec: 8dc1675
 
 **T3 deviations from spec, accepted (T10 must scrutinize)**
