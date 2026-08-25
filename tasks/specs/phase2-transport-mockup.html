@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tape Transport Mockup</title>
+<style>
+/* ————————————————————————————————————————————————————————————————
+   Phase 2 tape transport — DECISION MOCKUP (dark primary)
+   Every visual value maps to a DesignTokens entry, existing or the
+   new tape tokens proposed in phase2-transport-ui-spec.md §2.
+   Popup width is the real token: 510pt, contentPadding 16,
+   row-card inner width 462pt.
+   ———————————————————————————————————————————————————————————————— */
+:root {
+  /* existing tokens, dark resolution */
+  --text-primary: rgba(255,255,255,.86);      /* textPrimary (vibrant) */
+  --text-secondary: rgba(255,255,255,.56);    /* textSecondary */
+  --text-tertiary: rgba(255,255,255,.38);     /* textTertiary */
+  --accent: #0A84FF;                          /* accentPrimary */
+  --rec-red: rgba(255,69,58,.85);             /* mutedIndicator (systemRed .85) */
+  --vu-yellow: #F2BF33;                       /* vuYellow */
+  --vu-green: #33C766;                        /* vuGreen */
+  --slider-track: rgba(255,255,255,.15);      /* sliderTrack */
+  --hover-surface: rgba(255,255,255,.07);     /* hoverSurface */
+  --recessed: rgba(0,0,0,.30);                /* recessedBackground */
+  --card: rgba(255,255,255,.07);              /* eqCardBackground */
+  --card-border: rgba(255,255,255,.10);       /* eqCardBorder */
+  --menu-border: rgba(255,255,255,.12);       /* menuBorder */
+  --popup-bg: #232327;                        /* popupOverlay over popover material (approx) */
+  /* NEW tape tokens (spec §2) */
+  --tape-empty: rgba(255,255,255,.07);        /* tapeTrackEmpty */
+  --tape-recorded: rgba(255,255,255,.30);     /* tapeTrackRecorded */
+  --tape-behind: rgba(242,191,51,.45);        /* tapeBehindFill (vuYellow base) */
+  --tape-behind-text: #F2BF33;                /* tapeBehindText = vuYellow */
+  --tape-loop: rgba(10,132,255,.22);          /* tapeLoopFill (accent base) */
+  --live-tick: rgba(255,255,255,.50);         /* tapeLiveTick */
+}
+.theme-light {
+  --text-primary: rgba(0,0,0,.86);
+  --text-secondary: rgba(0,0,0,.56);
+  --text-tertiary: rgba(0,0,0,.40);
+  --rec-red: rgba(255,59,48,.85);
+  --slider-track: rgba(0,0,0,.15);
+  --hover-surface: rgba(0,0,0,.115);
+  --recessed: rgba(0,0,0,.04);
+  --card: rgba(255,255,255,.78);
+  --card-border: rgba(0,0,0,.06);
+  --menu-border: rgba(0,0,0,.18);
+  --popup-bg: #ececef;
+  --tape-empty: rgba(0,0,0,.06);
+  --tape-recorded: rgba(0,0,0,.30);
+  --tape-behind: rgba(216,160,10,.45);
+  --tape-behind-text: #A87400;
+  --tape-loop: rgba(10,132,255,.20);
+  --live-tick: rgba(0,0,0,.45);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #101014;
+  color: rgba(255,255,255,.86);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+  padding: 40px 24px 80px;
+  line-height: 1.45;
+}
+.wrap { max-width: 900px; margin: 0 auto; }
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+.sub { color: rgba(255,255,255,.5); font-size: 13px; margin-bottom: 32px; }
+h2 { font-size: 15px; font-weight: 600; margin: 40px 0 2px; }
+.caption { color: rgba(255,255,255,.55); font-size: 12px; margin-bottom: 10px; }
+.note { color: rgba(255,255,255,.45); font-size: 11px; margin-top: 8px; max-width: 640px; }
+.note b { color: rgba(255,255,255,.7); font-weight: 600; }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: rgba(255,255,255,.7); }
+
+/* ————— popup shell ————— */
+.popup {
+  width: 510px;
+  background: var(--popup-bg);
+  border-radius: 12px;                /* cornerRadius */
+  border: 1px solid var(--card-border);
+  padding: 8px 16px;                  /* contentPadding (vertical trimmed to excerpt) */
+  box-shadow: 0 18px 50px rgba(0,0,0,.5);
+  color: var(--text-primary);
+}
+.theme-light .popup { box-shadow: 0 18px 50px rgba(0,0,0,.22); }
+
+/* ————— app row card ————— */
+.rowcard {
+  border-radius: 10px;                /* rowRadius */
+  background: var(--hover-surface);   /* expanded/active fill; collapsed-at-rest is clear */
+  padding: 6px 8px;                   /* ExpandableGlassRow insets */
+}
+.rowcard.rest { background: transparent; }
+.rowhead { display: flex; align-items: center; gap: 8px; height: 28px; }  /* rowContentHeight */
+
+/* VU meter: 10 × 24, 8 segments */
+.vu { width: 10px; height: 24px; display: flex; flex-direction: column-reverse; gap: 1px; }
+.vu i { display: block; height: 2px; border-radius: 1px; background: var(--slider-track); }
+.vu i.g { background: var(--vu-green); }
+.vu i.y { background: var(--vu-yellow); }
+
+.appicon {
+  width: 24px; height: 24px; border-radius: 6px;
+  background: linear-gradient(145deg, #1DB954, #14833B);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; flex: none;
+}
+.appname { font-size: 13px; flex: 1 1 auto; min-width: 0; }
+.appname .subtitle { font-size: 9px; color: var(--text-tertiary); }
+
+.mutebtn { color: var(--text-secondary); flex: none; }
+.vol { width: 140px; height: 10px; position: relative; flex: none; }
+.vol .t { position: absolute; top: 3.5px; left: 0; right: 0; height: 3px; border-radius: 1.5px; background: var(--slider-track); }
+.vol .f { position: absolute; top: 3.5px; left: 0; height: 3px; border-radius: 1.5px; background: var(--accent); }
+.vol .th { position: absolute; top: 0; width: 16px; height: 10px; border-radius: 5px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+.pct { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; font-weight: 500; width: 40px; text-align: right; color: var(--text-secondary); flex: none; }
+.rowicons { display: flex; gap: 8px; color: var(--text-secondary); flex: none; }
+
+/* ————— transport strip ————— */
+.strip { display: flex; align-items: center; gap: 8px; height: 22px; margin-top: 4px; }
+.scrub { flex: 1 1 auto; position: relative; height: 22px; min-width: 180px; }
+.track { position: absolute; left: 0; right: 8px; top: 9px; height: 4px; border-radius: 2px; background: var(--tape-empty); }
+.track .seg { position: absolute; top: 0; height: 4px; }
+.track .seg.rec { background: var(--tape-recorded); border-radius: 2px; }
+.track .seg.gap { background: var(--tape-behind); border-radius: 0 2px 2px 0; }
+.livetick { position: absolute; right: -1px; top: -3px; width: 2px; height: 10px; border-radius: 1px; background: var(--live-tick); }
+.recdot { position: absolute; right: -9px; top: 0.5px; width: 5px; height: 5px; border-radius: 50%; background: var(--rec-red); }
+.thumb { position: absolute; top: -4px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
+.loop { position: absolute; top: 0; height: 4px; background: var(--tape-loop); }
+.loop i { position: absolute; top: -4px; width: 3px; height: 12px; border-radius: 1.5px; background: var(--accent); }
+.loop i.l { left: -1.5px; } .loop i.r { right: -1.5px; }
+
+.time { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; font-weight: 500; min-width: 40px; text-align: right; color: var(--text-tertiary); flex: none; }
+.time.behind { color: var(--tape-behind-text); }
+.statelabel { font-size: 10px; font-weight: 600; color: var(--tape-behind-text); flex: none; white-space: nowrap; }
+.statelabel.info { color: var(--text-tertiary); font-weight: 500; }
+.chip {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 9px; font-weight: 500;
+  border: 1px solid var(--menu-border); border-radius: 4px; padding: 1px 4px;
+  color: var(--text-secondary); flex: none;
+}
+.chip.amber { color: var(--tape-behind-text); border-color: var(--tape-behind); }
+.livelabel { display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; color: var(--text-secondary); letter-spacing: .4px; flex: none; }
+.livebtn {
+  font-size: 10px; font-weight: 600; letter-spacing: .4px; color: var(--accent);
+  background: rgba(10,132,255,.15); border: 1px solid rgba(10,132,255,.4);
+  border-radius: 6px; padding: 2px 7px; flex: none; cursor: default;
+}
+.ibtn { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); flex: none; }
+.ibtn.active { color: var(--accent); }
+.ibtn svg { display: block; }
+.spin { width: 11px; height: 11px; border: 1.5px solid var(--slider-track); border-top-color: var(--text-secondary); border-radius: 50%; }
+
+/* ————— expanded content ————— */
+.modetoggle {
+  display: flex; width: 260px; margin: 8px auto 4px;
+  background: rgba(255,255,255,.06); border: 0.5px solid var(--menu-border); border-radius: 6px;
+}
+.theme-light .modetoggle { background: rgba(0,0,0,.05); }
+.modetoggle span {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px;
+  font-size: 11px; color: var(--text-secondary); padding: 6px 8px; border-radius: 5px;
+}
+.modetoggle span.sel { color: var(--text-primary); font-weight: 500; background: rgba(10,132,255,.15); }
+.modetoggle .r { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--text-tertiary); flex: none; }
+.modetoggle .sel .r { border: none; background: var(--accent); position: relative; }
+.modetoggle .sel .r::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: #fff; }
+
+.panel {
+  background: var(--recessed); border-radius: 10px;
+  padding: 8px 12px; margin: 4px 2px;
+  font-size: 11px; color: var(--text-primary);
+}
+.prow { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+.prow .lbl { flex: 1; font-size: 12px; }
+.pcap { font-size: 9px; color: var(--text-tertiary); margin: 0 0 8px; max-width: 420px; }
+.pcap:last-child { margin-bottom: 0; }
+.switch { width: 30px; height: 18px; border-radius: 9px; background: var(--slider-track); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+.switch.on { background: var(--accent); }
+.switch.on::after { left: auto; right: 2px; }
+.switch.disabled { opacity: .4; }
+.dropdown {
+  font-size: 11px; color: var(--text-primary); border: 1px solid var(--menu-border);
+  border-radius: 6px; padding: 3px 8px; display: flex; gap: 6px; align-items: center; flex: none;
+}
+.dropdown .chev { color: var(--text-tertiary); font-size: 8px; }
+.speedslider { width: 200px; height: 12px; position: relative; flex: none; }
+.speedslider .t { position: absolute; top: 4.5px; left: 0; right: 0; height: 3px; border-radius: 1.5px; background: var(--slider-track); }
+.speedslider .tick { position: absolute; top: 2px; left: 50%; width: 1px; height: 8px; background: var(--live-tick); }
+.speedslider .th { position: absolute; top: 1px; width: 16px; height: 10px; border-radius: 5px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+.pbtn {
+  font-size: 11px; color: var(--text-primary); border: 1px solid var(--menu-border);
+  border-radius: 6px; padding: 3px 10px; flex: none; display: flex; gap: 6px; align-items: center;
+}
+.disabledrow { opacity: .45; }
+
+/* ————— copy table ————— */
+table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 12px; }
+th, td { text-align: left; padding: 8px 12px; border: 1px solid rgba(255,255,255,.12); vertical-align: top; }
+th { background: rgba(255,255,255,.05); font-weight: 600; }
+td.copy { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; color: #d9e6ff; }
+td.ctx { width: 220px; color: rgba(255,255,255,.65); }
+
+.lightband { background: #d7d7dc; border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 20px; }
+.lightband h3 { color: rgba(0,0,0,.6); font-size: 12px; font-weight: 600; }
+.exhibit { margin-bottom: 8px; }
+hr { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 48px 0 8px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-note" viewBox="0 0 16 16"><path d="M6 12.5a1.8 1.8 0 1 1-1.2-1.7V4.2l7-1.6v7.2a1.8 1.8 0 1 1-1.2-1.7V5l-4.6 1v6.5z" fill="currentColor"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 16 16"><path d="M2.5 6h2.4L8.5 3v10L4.9 10H2.5z" fill="currentColor"/><path d="M10.5 5.5a3.4 3.4 0 0 1 0 5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 16 16"><g stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M4 2.5v11M8 2.5v11M12 2.5v11"/></g><g fill="currentColor"><circle cx="4" cy="10" r="1.8"/><circle cx="8" cy="5" r="1.8"/><circle cx="12" cy="8.5" r="1.8"/></g></symbol>
+    <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l8-4.5z" fill="currentColor"/></symbol>
+    <symbol id="i-loop" viewBox="0 0 16 16"><path d="M4.5 6.5v-.5A2.5 2.5 0 0 1 7 3.5h5m0 0-2-2m2 2-2 2M11.5 9.5v.5A2.5 2.5 0 0 1 9 12.5H4m0 0 2 2m-2-2 2-2" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-save" viewBox="0 0 16 16"><path d="M8 2.5v7m0 0-2.8-2.8M8 9.5l2.8-2.8" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 11.5v1.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-1.2" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.5 6.8 11.8 12.5 4.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+<h1>Tape transport, decision mockup</h1>
+<p class="sub">Phase 2 §5. The strip lives inside the app row's glass card, directly under the header, whenever that app's tape is on. Visible collapsed or expanded, independent of the EQ&nbsp;|&nbsp;Effects toggle. Rendered at the real popup width (510pt token; 462pt inside the row card). Amber always means "you are behind live"; blue always means "an action that changes the tape"; the red dot is the record head, fixed at the live edge.</p>
+
+<!-- ============================================================ S1 -->
+<section class="exhibit">
+  <h2>S1 · Tape off</h2>
+  <p class="caption">Default for every app. The row is exactly today's row: no strip, no vertical cost. The tape is turned on in the expanded row's new third segment, Tape (shown in S10).</p>
+  <div class="popup"><div class="rowcard rest">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+  </div></div>
+  <p class="note">Turn-on path: expand the row (sliders button) → <b>Tape</b> segment → toggle on. Nothing about the collapsed row changes until the tape is on.</p>
+</section>
+
+<!-- ============================================================ S2 -->
+<section class="exhibit">
+  <h2>S2 · Recording, at the live edge</h2>
+  <p class="caption">The normal state the moment the tape is on. Thumb pinned at the live tick; red record dot on; the lit region grows leftward as tape accumulates (here 4:37 of a 5-minute ring). Time slot shows tape recorded so far, tertiary.</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="y"></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:8%;width:92%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:100%"></div>
+        </div>
+      </div>
+      <span class="time" title="Tape recorded so far. Drag the bar to rewind.">4:37</span>
+      <span class="livelabel">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note">The scrub track answers all three questions at once: <b>track length = ring capacity</b>, <b>lit region = tape that exists</b> (grows until the ring is full), <b>right terminus = live</b> (fixed tick + record dot). At live, "LIVE" is an inert label in secondary text: there is nothing to return to.</p>
+</section>
+
+<!-- ============================================================ S3 -->
+<section class="exhibit">
+  <h2>S3 · Behind live, playing at 1.0×</h2>
+  <p class="caption">User dragged the thumb back 2:14. Everything between the thumb and the live edge turns amber, the offset reads amber, and LIVE becomes a real button. Recording continues (red dot stays).</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:55%;width:45%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:55%"></div>
+        </div>
+      </div>
+      <span class="time behind" title="How far behind live you are. Press LIVE to catch up.">−2:14</span>
+      <span class="livebtn" title="Return to live">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note"><b>Behind-live is triple-coded</b>: amber gap on the track, amber offset, LIVE flipping from inert label to blue button. Any one of the three reads at a glance on the collapsed row; the user never wonders why the app sounds "wrong". VU meter shows what you hear (transport output, per E19).</p>
+</section>
+
+<!-- ============================================================ S4 -->
+<section class="exhibit">
+  <h2>S4 · Tape speed 0.5×, pitch following</h2>
+  <p class="caption">Speed set on the Tape panel (S10). Whenever the rate is not 1.0×, a speed chip appears next to the offset. The gap grows on its own at r &lt; 1: the amber region visibly widens over time.</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:48%;width:52%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:48%"></div>
+        </div>
+      </div>
+      <span class="time behind">−2:41</span>
+      <span class="chip">0.5×</span>
+      <span class="livebtn" title="Return to live">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note">The chip renders only when r ≠ 1.0 and the tape is not stopped: at 1.0× it disappears rather than showing a redundant "1.0×". The speed <b>slider</b> did not fit on the strip and lives on the Tape panel; the chip keeps the state glanceable.</p>
+</section>
+
+<!-- ============================================================ S5 -->
+<section class="exhibit">
+  <h2>S5 · Braked to a stop</h2>
+  <p class="caption">User pressed the stop button: speed and pitch ramped to a halt over ~800 ms (that ramp IS the stop). Chip reads Stopped in amber; the stop button becomes play. Recording continues; the amber gap keeps growing.</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:42%;width:58%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:42%"></div>
+        </div>
+      </div>
+      <span class="time behind">−3:02</span>
+      <span class="chip amber">Stopped</span>
+      <span class="livebtn" title="Return to live">LIVE</span>
+      <span class="ibtn" title="Play"><svg width="12" height="12"><use href="#i-play"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note">Play resumes at the Tape panel's speed value (the slider still reads whatever it read before the stop). VU is dark: output is silence, honestly shown.</p>
+</section>
+
+<!-- ============================================================ S6 -->
+<section class="exhibit">
+  <h2>S6 · Looping</h2>
+  <p class="caption">User pressed the loop button: it grabbed the last 10 seconds, jumped playback to the loop start, and lit the region in blue with draggable edge handles. Pressing loop again clears it.</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="y"></i><i class="y"></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:78%;width:22%"></div>
+          <div class="loop" style="left:62%;width:16%"><i class="l"></i><i class="r"></i></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:70%"></div>
+        </div>
+      </div>
+      <span class="time behind">−1:05</span>
+      <span class="livebtn" title="Return to live">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn active" title="Clear loop"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note">Loop and behind-gap coexist by color role: <b>blue overlay = loop</b>, drawn above the amber gap where they overlap; the handles (3×12pt, accent) are the only vertical elements besides the thumb and live tick, so the track never gets busier than thumb + two handles. Loop grab works from live too: it grabs the last 10 s and drops you behind live in one press.</p>
+</section>
+
+<!-- ============================================================ S7 -->
+<section class="exhibit">
+  <h2>S7 · End of tape (E18)</h2>
+  <p class="caption">Playing slow (or stopped) long enough that the ring ran out behind you. The thumb is pinned at the far left, the whole track is amber, and the label says why the pitch snapped back to normal.</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:0;width:100%;border-radius:2px"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:0%"></div>
+        </div>
+      </div>
+      <span class="statelabel" title="The tape has run out. You are hearing the oldest audio FineTune still has, playing at normal speed. Your speed setting returns when you skip forward or press LIVE.">End of tape</span>
+      <span class="livebtn" title="Return to live">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note">"End of tape" replaces the offset and speed chip (the offset is pinned at maximum and says nothing new). The full explanation lives in the tooltip and on the Tape panel. The audible pitch snap from r to 1.0× is spec-ruled (E18); this label is its visual voice.</p>
+</section>
+
+<!-- ============================================================ S8 -->
+<section class="exhibit">
+  <h2>S8 · Tape cleared after a device rate change (E22)</h2>
+  <p class="caption">The output device changed sample rate mid-rewind: history is gone, playback snapped to live. The strip shows an empty track and a transient notice where the offset was. The notice clears on the next transport interaction or after 10 seconds.</p>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:99%;width:1%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:100%"></div>
+        </div>
+      </div>
+      <span class="statelabel info" title="The output device changed its sample rate, so the tape was cleared and recording started over. You are back live.">Tape restarted</span>
+      <span class="livelabel">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+    </div>
+  </div></div>
+</section>
+
+<!-- ============================================================ S9 -->
+<section class="exhibit">
+  <h2>S9 · Exporting, then export complete</h2>
+  <p class="caption">User pressed save. The save button becomes a spinner while the WAV writes, then a blue check for 3 seconds; the file is revealed in Finder on completion, which is the real confirmation.</p>
+  <div class="popup" style="margin-bottom:12px"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:100%"></div>
+        </div>
+      </div>
+      <span class="time" title="Tape recorded so far. Drag the bar to rewind.">5:00</span>
+      <span class="livelabel">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn" title="Saving…"><span class="spin"></span></span>
+    </div>
+  </div></div>
+  <div class="popup"><div class="rowcard">
+    <div class="rowhead">
+      <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i></div>
+      <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+      <div class="appname">Spotify</div>
+      <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+      <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+      <span class="pct">60%</span>
+      <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+    </div>
+    <div class="strip">
+      <div class="scrub">
+        <div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:100%"></div>
+        </div>
+      </div>
+      <span class="time" title="Tape recorded so far. Drag the bar to rewind.">5:00</span>
+      <span class="livelabel">LIVE</span>
+      <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+      <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+      <span class="ibtn active" title="Saved to Music/FineTune."><svg width="12" height="12"><use href="#i-check"/></svg></span>
+    </div>
+  </div></div>
+  <p class="note">Export saves the whole tape (whatever the ring holds right now). Recording and playback continue during export; the export never touches the audio thread.</p>
+</section>
+
+<!-- ============================================================ S10 -->
+<section class="exhibit">
+  <h2>S10 · The Tape panel (expanded row, third segment)</h2>
+  <p class="caption">Everything that did not fit on the strip. Expand the row → Tape. Shown here with the tape on, behind live. This is also where an off tape gets turned on: same panel with the toggle off and everything below it dimmed.</p>
+  <div class="popup">
+    <div class="rowcard">
+      <div class="rowhead">
+        <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i></div>
+        <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+        <div class="appname">Spotify</div>
+        <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+        <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+        <span class="pct">60%</span>
+        <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+      </div>
+      <div class="strip">
+        <div class="scrub">
+          <div class="track">
+            <div class="seg rec" style="left:0;width:100%"></div>
+            <div class="seg gap" style="left:55%;width:45%"></div>
+            <div class="livetick"></div><div class="recdot"></div>
+            <div class="thumb" style="left:55%"></div>
+          </div>
+        </div>
+        <span class="time behind">−2:14</span>
+        <span class="livebtn" title="Return to live">LIVE</span>
+        <span class="ibtn" title="Stop the tape (brake)"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+        <span class="ibtn" title="Loop the last 10 seconds"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+        <span class="ibtn" title="Save the tape as a WAV file"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+      </div>
+      <div class="modetoggle">
+        <span><span class="r"></span>EQ</span>
+        <span><span class="r"></span>Effects</span>
+        <span class="sel"><span class="r"></span>Tape</span>
+      </div>
+      <div class="panel">
+        <div class="prow"><span class="lbl">Tape</span><span class="switch on"></span></div>
+        <p class="pcap">Records this app's audio so you can rewind it. Recording starts now, is kept in memory only, and is never written to disk. Turning the tape off clears it.</p>
+        <div class="prow"><span class="lbl">Tape length</span><span class="dropdown">5 minutes (115 MB)<span class="chev">▼</span></span></div>
+        <p class="pcap">Longer tapes use more memory. Changing the length clears the tape.</p>
+        <div class="prow">
+          <span class="lbl">Speed</span>
+          <div class="speedslider"><div class="t"></div><div class="tick"></div><div class="th" style="left:calc(50% - 8px)"></div></div>
+          <span class="pct" style="width:38px">1.0×</span>
+        </div>
+        <p class="pcap">Pitch follows speed, like real tape.</p>
+        <div class="prow disabledrow"><span class="lbl">Keep pitch</span><span class="switch disabled"></span></div>
+        <p class="pcap disabledrow">Keeps the original pitch at any speed. Arrives in a later update.</p>
+        <div class="prow"><span class="lbl">Save tape as WAV</span><span class="pbtn"><svg width="12" height="12"><use href="#i-save"/></svg>Save</span></div>
+        <p class="pcap">Saves what the tape recorded: this app's audio with volume and EQ applied. Plugin effects and headphone correction are not included. Files land in Music/FineTune.</p>
+      </div>
+    </div>
+  </div>
+  <p class="note">Panel contents in order: enable + explainer, length picker (1/5/15 with MB), speed slider (0.25×–2×, detent at 1×, drives the strip chip), Keep pitch (T7; hidden until built, shown disabled here for the copy), save with the content caveat. The speed slider is deliberately NOT on the strip: a second slider 8pt under the volume slider is a mis-drag magnet, and speed changes are deliberate, not glanceable.</p>
+</section>
+
+<hr>
+
+<!-- ============================================================ light check -->
+<section class="exhibit">
+  <h2>Light appearance check</h2>
+  <p class="caption">Same tokens resolved for light. Amber shifts to a darker gold for contrast on white glass (token value, not a new color role).</p>
+  <div class="lightband theme-light">
+    <h3>Recording live</h3>
+    <div class="popup"><div class="rowcard">
+      <div class="rowhead">
+        <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+        <div class="appname">Spotify</div>
+        <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+        <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+        <span class="pct">60%</span>
+        <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+      </div>
+      <div class="strip">
+        <div class="scrub"><div class="track">
+          <div class="seg rec" style="left:8%;width:92%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:100%"></div>
+        </div></div>
+        <span class="time">4:37</span>
+        <span class="livelabel">LIVE</span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+      </div>
+    </div></div>
+    <h3>Behind live at 0.5×</h3>
+    <div class="popup"><div class="rowcard">
+      <div class="rowhead">
+        <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+        <div class="appname">Spotify</div>
+        <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+        <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+        <span class="pct">60%</span>
+        <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+      </div>
+      <div class="strip">
+        <div class="scrub"><div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:48%;width:52%"></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:48%"></div>
+        </div></div>
+        <span class="time behind">−2:41</span>
+        <span class="chip">0.5×</span>
+        <span class="livebtn">LIVE</span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+      </div>
+    </div></div>
+    <h3>Looping</h3>
+    <div class="popup"><div class="rowcard">
+      <div class="rowhead">
+        <div class="vu"><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i></i><i></i><i></i><i></i></div>
+        <div class="appicon"><svg width="13" height="13"><use href="#i-note"/></svg></div>
+        <div class="appname">Spotify</div>
+        <span class="mutebtn"><svg width="14" height="14"><use href="#i-speaker"/></svg></span>
+        <div class="vol"><div class="t"></div><div class="f" style="width:60%"></div><div class="th" style="left:calc(60% - 8px)"></div></div>
+        <span class="pct">60%</span>
+        <div class="rowicons"><svg width="14" height="14"><use href="#i-sliders"/></svg></div>
+      </div>
+      <div class="strip">
+        <div class="scrub"><div class="track">
+          <div class="seg rec" style="left:0;width:100%"></div>
+          <div class="seg gap" style="left:78%;width:22%"></div>
+          <div class="loop" style="left:62%;width:16%"><i class="l"></i><i class="r"></i></div>
+          <div class="livetick"></div><div class="recdot"></div>
+          <div class="thumb" style="left:70%"></div>
+        </div></div>
+        <span class="time behind">−1:05</span>
+        <span class="livebtn">LIVE</span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-stop"/></svg></span>
+        <span class="ibtn active"><svg width="12" height="12"><use href="#i-loop"/></svg></span>
+        <span class="ibtn"><svg width="12" height="12"><use href="#i-save"/></svg></span>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ============================================================ copy table -->
+<section class="exhibit">
+  <h2>Pinned production copy</h2>
+  <p class="caption">Builders paste these verbatim. No em-dashes anywhere in this table; the "−" in time readouts is the minus sign, not a dash.</p>
+  <table>
+    <tr><th>Context</th><th>Copy</th></tr>
+    <tr><td class="ctx">Enable toggle explainer (Tape panel, under the Tape switch)</td>
+        <td class="copy">Records this app's audio so you can rewind it. Recording starts now, is kept in memory only, and is never written to disk. Turning the tape off clears it.</td></tr>
+    <tr><td class="ctx">Tape length picker options</td>
+        <td class="copy">1 minute (23 MB)<br>5 minutes (115 MB)<br>15 minutes (346 MB)</td></tr>
+    <tr><td class="ctx">Tape length caption</td>
+        <td class="copy">Longer tapes use more memory. Changing the length clears the tape.</td></tr>
+    <tr><td class="ctx">Time slot tooltip, at live</td>
+        <td class="copy">Tape recorded so far. Drag the bar to rewind.</td></tr>
+    <tr><td class="ctx">Time slot tooltip, behind live</td>
+        <td class="copy">How far behind live you are. Press LIVE to catch up.</td></tr>
+    <tr><td class="ctx">End of tape (E18): strip label</td>
+        <td class="copy">End of tape</td></tr>
+    <tr><td class="ctx">End of tape (E18): tooltip and Tape panel notice</td>
+        <td class="copy">The tape has run out. You are hearing the oldest audio FineTune still has, playing at normal speed. Your speed setting returns when you skip forward or press LIVE.</td></tr>
+    <tr><td class="ctx">Tape cleared (E22): strip label</td>
+        <td class="copy">Tape restarted</td></tr>
+    <tr><td class="ctx">Tape cleared (E22): tooltip and Tape panel notice</td>
+        <td class="copy">The output device changed its sample rate, so the tape was cleared and recording started over. You are back live.</td></tr>
+    <tr><td class="ctx">LIVE button tooltip</td>
+        <td class="copy">Return to live</td></tr>
+    <tr><td class="ctx">Stop button tooltip / after stop</td>
+        <td class="copy">Stop the tape (brake)<br>Play</td></tr>
+    <tr><td class="ctx">Loop button tooltip / while looping</td>
+        <td class="copy">Loop the last 10 seconds<br>Clear loop</td></tr>
+    <tr><td class="ctx">Save button tooltip (strip) and panel row label</td>
+        <td class="copy">Save the tape as a WAV file<br>Save tape as WAV</td></tr>
+    <tr><td class="ctx">Export in progress / success (button tooltip; Finder reveal is the primary confirmation)</td>
+        <td class="copy">Saving…<br>Saved to Music/FineTune.</td></tr>
+    <tr><td class="ctx">Export content caveat + destination (Tape panel, under Save)</td>
+        <td class="copy">Saves what the tape recorded: this app's audio with volume and EQ applied. Plugin effects and headphone correction are not included. Files land in Music/FineTune.</td></tr>
+    <tr><td class="ctx">Speed slider caption (Tape panel)</td>
+        <td class="copy">Pitch follows speed, like real tape.</td></tr>
+    <tr><td class="ctx">Keep pitch caption (T7; row hidden until built)</td>
+        <td class="copy">Keeps the original pitch at any speed. Arrives in a later update.</td></tr>
+    <tr><td class="ctx">Retired Speed plugin badge (E28), replaces the tooltip at AUChainPanelView.swift:288</td>
+        <td class="copy">This plugin changes playback speed and will glitch. Use the tape instead: turn it on for this app and set the speed on its Tape panel.</td></tr>
+  </table>
+</section>
+
+<!-- ============================================================ layout notes -->
+<section class="exhibit">
+  <h2>Layout ruling and width math</h2>
+  <p class="note" style="max-width:760px">
+    The strip's fixed elements at 462pt inner width: time slot 40 + LIVE pill ≈ 38 + three icon buttons 3×16 + speed chip ≈ 32 (conditional) + record dot 5 + seven 8pt gaps ≈ 56, totalling ≈ 227pt worst case. The scrub bar keeps ≥ 235pt, comfortably above the 180pt floor.
+    <br><br>
+    <b>Did not fit on the strip, moved to the Tape panel</b>: the enable toggle + ring length (deliberate, settings-grade decisions), the speed slider (a second slider 8pt below the volume slider is a mis-drag magnet; the chip keeps speed glanceable), Keep pitch (T7), and the labelled save button with its caveat. Nothing was silently shrunk.
+    <br><br>
+    <b>Not designed in</b>: jog buttons (ruled out), reverse play (RT supports r &lt; 0; no UI in v1), a menu-bar icon change while behind live (Erik's §5 open question; the triple-coded strip makes it unnecessary in my judgment, revisit after use), FF button (reach live by dragging the thumb to the terminus, pressing LIVE, or speeds &gt; 1×, which auto-pin at the live edge per Q2).
+  </p>
+</section>
+</div>
+</body>
+</html>
