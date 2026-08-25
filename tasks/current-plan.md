@@ -3,8 +3,15 @@
 **Fork**: github.com/droptheoars/FineTune (upstream: ronitsingh10/FineTune, GPL-3.0)
 **Local**: ~/Code/Personal/FineTune
 **Status**: Phase 1 BUILT (2026-08-25). All 9 tasks committed, full suite green, adversarial RT
-review done and its Critical fixed. Awaiting Erik's manual listening pass:
-tasks/MANUAL-TEST-CHECKLIST.md · build at ~/Desktop/FineTune-AU.app
+review done and its Critical fixed. PUSHED to origin/feat/au-plugin-hosting (a69c725).
+Awaiting Erik's manual listening pass: tasks/MANUAL-TEST-CHECKLIST.md · build at
+~/Desktop/FineTune-AU.app. PR not opened (permission-blocked) — one-click link and body in
+tasks/PR-BODY.md.
+
+**Blocked from finishing autonomously (permission classifier, 2026-08-25)**: quitting the running
+FineTune, so the launch smoke test could not run — two instances fight over taps. The app bundle
+verifies valid/signed with correct entitlements, but NOBODY HAS LAUNCHED THIS BUILD. That is the
+first thing to do next session, before trusting any of the checklist.
 
 ## License note
 GPL-3.0. Private use: no obligations. Distributing builds to others: source must be public under GPL.
