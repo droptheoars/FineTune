@@ -205,3 +205,128 @@ Mutation verification remains owed by convention, but I would not block on this 
 E19 gate branch). C2 is a data-loss decision Erik must make before merge, with (a) as the
 recommended ruling. I1 should land before the feature is used without the URL scheme. The
 keystone RT module itself withstood the attack — every deviation it took was the right call.
+
+---
+
+# Addendum — Fable adversarial review of commit 33b6def (the E24 reservation fix)
+
+**Reviewer**: Fable · xhigh · 2026-08-26. Scope: the 30-line reservation protocol added to
+`TapeTransportRT.writeToRing` / `copyRingWindow`, reviewed on the assumption it is subtly
+wrong. Read-only; no builds run (full-suite gate running separately).
+
+**Verdict: SOUND BUT INCOMPLETE.** The protocol is correct *by argument* — not merely by
+trial count — for the single-writer case, which is the case the 1-in-56 race lived in. It
+does not hold in the documented dual-writer crossfade-promotion window, where the
+reservation's `max()` is a non-atomic read-modify-write and can lose an update, reopening
+the exact torn-accept the commit exists to close (A1 below).
+
+## Why the protocol is correct (single writer) — the argument, not the absence of counterexamples
+
+Let a write be `[w, w+n)`. It destroys old frames `[w−C, w+n−C)` (slot of frame f is next
+overwritten by frame f+C; multi-lap k≥1 is covered by the same inequality). The writer
+publishes `R ≥ w+n` **before** its first destroying store, with `OSMemoryBarrier()` (a full
+`dmb ish` on ARM64) between the R-store and the memcpy. The reader copies, barriers, then
+loads R and accepts iff `start ≥ R_after − C`.
+
+Case A — the copy observed **any** byte of a destroying store (this is the definition of
+torn, including a mid-float tear: memcpy is not per-word atomic): writer order is
+R-store → dmb → sample-stores; reader order is sample-loads → dmb → R-load. ARMv8 is
+multi-copy atomic, so observing a sample store forces the later R-load to observe the
+R-store or newer: `R_after ≥ w+n > start + C` (the destruction reached `start` only if
+`w+n−C > start`), the check fails, the chunk is dropped. Case B — the copy observed only
+old data: it is genuinely intact, and acceptance is correct regardless of R. Destruction
+that *began before* the copy is covered too: R is monotonic under a single writer, so the
+post-copy load still sees the reservation. There is no third case; the protocol is closed,
+not narrowed. (Had it merely narrowed the window, the prior 1.8% tear rate would still have
+shown ~thousands of tears in 674 165 trials, not zero — the measurement is consistent with
+closure, but the argument above is the actual evidence.)
+
+The old check failed precisely because `_writeFrames` bounds what is *readable*, not what
+is *destroyed* — the clock trails the destruction by up to one callback. The reservation is
+the missing second bound. Both are needed; neither alone suffices.
+
+## A1 — IMPORTANT: the reservation's `max()` loses updates in the dual-writer promotion window
+
+**What the user does**: exports while audio plays, the export thread (utility QoS) gets
+descheduled mid-chunk under load (the E24 scenario), and the wake-up re-check lands inside
+a device-switch crossfade promotion — the header's documented window where the old
+primary's in-flight callback and the promoted one are both inside `writeAndRender` at once.
+**What they get**: a torn span accepted into the WAV — the failure E24 declares "must be
+impossible", in a much narrower window than before.
+**Why the code produces it**: `_writeReserved = max(_writeReserved, writeFrames &+ n)` is a
+non-atomic read-modify-write. Two concurrent writers A (n_A = 4096, old device's buffer
+size) and B (n_B = 512, new device's) can both read the resting R = W; A stores W+4096,
+begins destroying `[W−C, W+4096−C)`; B then stores W+512 — the published reservation moves
+*backwards* while A's destruction is in flight. A reader's post-copy check accepts any
+start in `[W+512−C, W+4096−C)` that A tore. The comment says "the reservation must never
+move backwards"; `max()` computed on a stale read does not enforce that — it only prevents
+a writer from regressing R below what *it* read, not below what the other writer reserved.
+Note the two devices' callback sizes genuinely differ across a promotion, so n_A ≠ n_B is
+the normal case, not a corner.
+**Severity reasoning**: probability is multiplicative (descheduled reader × promotion ×
+edge-adjacent chunk) and the same window already tears `_writeFrames` itself (accepted,
+T10/I2) — but those accepted races are duplicated/offset *content*; this one is a torn
+*file*, which E24 rules absolute. Important, not Critical, on rarity alone.
+**Fix direction**: make the reservation an atomic max — a CAS loop
+(`atomic_compare_exchange` via a C shim or `OSAtomicCompareAndSwap64`-class primitive) is
+RT-legal: lock-free, bounded by at most one contender. Alternatively, extend the T10/I2
+accepted-race list to name this residue explicitly and correct the `max()` comment — but
+given the file's own "must be impossible" contract, the CAS is the honest fix.
+**Test exists?** No, and the harness cannot see it: a verbatim two-thread harness models
+one writer + one reader. The 0-in-674 165 result is silent on every dual-writer
+interleaving. An ordering-style test (house convention) can force it: interleave two
+scripted `writeToRing` calls with a reader whose copy is split around A's memcpy.
+
+## Verified CORRECT (checked, not assumed)
+
+- **RT-legality of the addition**: one aligned Int64 store, one `Int64` `max`, one
+  `OSMemoryBarrier()` per callback — no allocation, no lock (not even trylock), no ObjC, no
+  logging. The barrier count on the write path goes 2 → 3; negligible and legal.
+- **Ordering placement**: R-store → barrier → memcpy → barrier → W-store on the writer;
+  W-load → barrier → copy → barrier → R-load on the reader. Exactly the orderings the
+  argument above needs, on both sides. The pre-check correctly still bounds the *leading*
+  edge with W (R would wrongly cover unwritten frames); the post-check correctly bounds the
+  *trailing* edge with R.
+- **The read head needs no reservation**: playback's trailing clamp sits `marginFrames`
+  (1 s = 48 000 frames) above the physical trailing edge; destruction leads the clock by at
+  most one callback (≪ margin), and within one callback writer and renderer are the same
+  thread, sequenced. The Catmull-Rom `index−1` reach stays margin−1 above destruction. The
+  fix rightly leaves playback alone — the tearing window never reaches it.
+- **Wrap and the oversized-callback path**: the reservation and check are absolute-frame
+  arithmetic — no ring-index math to get wrong at the physical wrap. For
+  `frameCount > capacityFrames` the reservation uses the *unclamped* count, matching the
+  W advance; the acceptance region `[W+n−C, W)` goes empty and every old span is rejected,
+  which is correct — the whole ring was clobbered.
+- **Liveness**: R ≥ W can only *newly* reject spans within one callback of the physical
+  trailing edge; every exporter start (first attempt and restarts alike) is derived
+  `≥ oldest = W − C + margin`, a full second above that. No new rejection class, no spin,
+  no starvation; `maxAttempts = 3` still bounds the loop, and at rest R == W so the check
+  degenerates to the old one exactly.
+- **Silence writes reserve too**: `writeSilence` routes through `writeToRing`, so
+  zero-fills destroy history under the same reservation. Correct — silence overwrites are
+  overwrites.
+- **Exporter unchanged and still right**: whole-file restart on `windowLost` (never a
+  mid-file gap), restart start derived from W not R (margin absorbs the ≤ 1-callback
+  difference), hidden-sibling partial, single reader of `copyRingWindow` in the codebase.
+
+## Re-check of the earlier review's E24-adjacent reasoning (what it got wrong, and what else shares the flaw)
+
+The earlier E24 clearance verified the *mirror structure* ("samples→barrier→index; re-check
+catches a mid-copy lap") without enumerating interleavings — it implicitly assumed the
+re-check's clock reflects destruction, but destruction precedes the W-store by design, so a
+lap's newest callback was invisible to the re-check. The flawed method is "publication
+order verified ⇒ safety concluded". Re-checked the other conclusions that used it:
+
+- **Seqlock command consume**: genuinely sound — generation is read on *both* sides of the
+  payload, which is what makes a seqlock immune to the above flaw. Stands.
+- **nit — `setLoop` clear-transition can expose a torn pair for one callback**: writer
+  publishes end=0 → start=S′ → end=E′ (barriered); the RT reader loads end first, then
+  start. Reading the *new* end guarantees the new start (reverse-order read — correct), but
+  a reader that catches the **old** end (missing the clear) can pair it with the *new*
+  start: `(S′, E_old)`. If that region passes the size gate, one callback runs a
+  plausible-looking wrong loop — at worst one spurious 10 ms wrap jump, self-healing next
+  callback. Same reasoning class as E24: order verified, torn-pair interleaving not.
+  Bounded and arguably within the accepted-race posture; documenting it in the T10/I2 list
+  is enough. Pre-existing; not introduced by 33b6def.
+- **`diagnosticsSnapshot` unpaired W/readPos loads**: display-only consumer; a stale pair
+  skews `lagFrames` by one callback on screen. Fine as ruled.
