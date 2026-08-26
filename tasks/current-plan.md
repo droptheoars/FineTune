@@ -134,7 +134,58 @@ Build order T0-T10 with tiers and gates is in the spec. HEAR-IT-EARLY checkpoint
 - [x] T8 transport UI (Sonnet) — b0fb2ae, 25 tests, 9 previews matching the mockup
 - [x] T9 end-to-end wiring (Opus) — 294c8c3, plus the Phase 2 manual listening checklist
       (HEAR-IT-EARLY minimum marked inside it).
-- [ ] T10 Fable adversarial review of the RT diff — running
+- [x] T10 Fable adversarial review of the RT diff — 660accc. 2 Critical, 2 Important, 7 nits.
+      The keystone RT module withstood the attack; all five T3 deviations were attacked and STAND.
+- [x] T11 review fixes (Opus) — 82aa6e8, 3c6b257, b2ebda8, d9f81dd
+- [x] T12 global save-length setting (Sonnet) — 8201b56. Erik-requested mid-session.
+- [x] T13 speed slider fix (Sonnet) — 44b985f. Erik-reported "jumpy and buggy" on first real use.
+- [ ] T14 torn-copy flake investigation (Opus) — running
+
+**T10 findings and their resolution**
+- **C1 CRITICAL (fixed, 82aa6e8)**: the E19 gate substitution poisoned the RECORDING. A stopped
+  or braked tape has output peak 0, so the output gate re-armed and zeroed the LIVE input at the
+  gain stage BEFORE `writeAndRender` copied it to the ring: everything the app played while the
+  tape was stopped was recorded as silence, and the gate could only reopen on a non-silent TAPE
+  peak, so it stayed shut for the whole stopped span. Root insight: in the built architecture the
+  gate no longer protects playback at all (the transport overwrites the buffer after the gain
+  stage), so the substitution defended nothing and only damaged the tape. Gate now follows
+  livePeak; the METER keeps the substitution. **This bug was introduced by the orchestrator's own
+  T5 brief, which pushed E19b hard as a must-fix.** The spec's E19 ruling is wrong as written.
+- **C2 CRITICAL (fixed, 3c6b257, Erik ruled)**: `cleanupStaleTaps` E20-pinned only ENGAGED
+  transports, so an armed-but-live tape was released and its ring freed after ~30s of silence.
+  Pause Spotify, come back, retro-record is empty: silent data loss on the flagship flow.
+  Erik's ruling: an armed tape survives a pause; the ring frees only on quit, disarm, or ignore.
+  Accepted cost: up to the ring size stays resident while an armed app sits paused.
+- **I1 (fixed, 3c6b257)**: an engaged transport now forces its app to stay in the list, so LIVE
+  and stop stay reachable. Previously an unpinned quiet app left the list entirely, leaving ghost
+  audio playing the past with no control except the URL scheme.
+- **I2 (documented, b2ebda8)**: the crossfade promotion race is worse than the accepted "one
+  blended buffer" — concurrent `writeAndRender` can double-advance the write clock (one duplicated
+  ~10ms span) and desync the read-position pair (constant offset until the next seek/LIVE
+  re-derives it). No memory unsafety, bounded, self-healing. Recorded accurately in code.
+- Nits fixed: stale ringMinutes in the export closure, second-resolution filenames overwriting
+  each other. `AppTapeTransportTests` ruled NOT theater by the review, though its
+  mutation-verification was never reported.
+
+**First real use (Erik, 2026-08-26 morning)**
+- Speed slider felt "jumpy and buggy". Root cause was NOT smoothing: the slider's position was
+  read from a model rebuilt by the 30fps level-poll timer, so between ticks the thumb snapped back
+  to a stale value and fought the drag; the ±0.05 detent at 1.0 also applied mid-drag. Fixed by
+  local drag state (the standard SwiftUI fix for a polled-state-backed control) plus detent on
+  release only, plus a wider track. The rate-command path was checked and cleared: rapid
+  `setTargetRate` calls retune the target continuously with no ramp restart, so no audible stepping.
+- Option-key fine adjust SKIPPED: `LiquidGlassSlider` wraps an AppKit slider that reads absolute
+  cursor position, so a precision mode needs that shared component restructured. Not worth the
+  regression risk for one control. If finer control is still wanted, narrow the RANGE (0.25-2.0
+  is a lot for the width) rather than chasing the gesture.
+
+**Open flake under investigation (T14)**
+`TapeWindowReaderTests/acceptedCopiesAreNeverTorn` failed once in a full-suite run, passed in
+isolation and on rerun. NOT being accepted as flakiness: that test guards the exporter's lock-free
+read against the RT writer, and load is exactly what widens a real race window. If real, a user's
+saved file could contain a torn span silently.
+
+## Phase 2 open decisions for Erik
 
 **Orchestrator-verified gate (not self-reported)**: full suite on the integrated tree at
 294c8c3 — exit 0, 1138 test cases passed, 0 failed.
@@ -183,10 +234,14 @@ summary`, not eyeballed streamed output. The tree had 854 @Test methods at T3; a
 "1034" was an invocation-style count and caused a false alarm.
 
 ## Phase 2 open decisions for Erik
-- D3: Accept the Q7 gate (hear tests 5+7 before T5 merges)?
-- D4: Open the Phase 1 PR now (body in tasks/PR-BODY.md, SHA needs refresh)?
-- D5: Accept E22 (rate-change device switch clears the tape)?
-- D6: When to run the transport-UI decision mockup loop (blocks all UI work).
+- D3: SUPERSEDED. Erik chose to build Phase 2 before hearing tests 5+7; the Q7 merge gate was
+  overridden by his explicit instruction. Tests 5 and 7 are STILL UNHEARD and now sit under a
+  full phase of new RT work on the same code paths.
+- D4: Open the Phase 1 PR (body in tasks/PR-BODY.md, SHA needs refresh). Still open.
+- D5: E22 accepted implicitly (built as specced: a rate-changing device switch clears the tape).
+- D6: DONE. Mockup loop ran 2026-08-25; Erik's four decisions are recorded above.
+- D7: **Nothing in Phase 2 has been heard yet.** 935 test methods green, zero seconds of listening.
+  The HEAR-IT-EARLY minimum (arm, rewind 10s, LIVE back) is in MANUAL-TEST-CHECKLIST.md.
 
 ## Model ladder for this project
 - Spec/architecture: Fable xhigh (RT callback + third-party code in-process = silent-wrong territory)
