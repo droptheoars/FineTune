@@ -128,8 +128,9 @@ final class TapeExporter {
         defer { isExporting = false }
 
         let directory = destinationDirectory
-        let destination = directory.appendingPathComponent(
-            Self.fileName(appName: appName, date: Date())
+        let destination = Self.uniqueDestination(
+            in: directory,
+            fileName: Self.fileName(appName: appName, date: Date())
         )
         let chunk = max(1, chunkFrames)
         let capacity = availableCapacity
@@ -290,6 +291,26 @@ final class TapeExporter {
 
     /// `<App Name> <yyyy-MM-dd HH.mm.ss>.wav` (§3-Q5), with the characters a
     /// filename cannot carry folded to `-`.
+    /// The name is stamped to the second and `write` replaces whatever sits at its
+    /// destination, so two saves inside the same second would silently overwrite
+    /// each other (T10/N7). Disambiguate the way the Finder does.
+    nonisolated static func uniqueDestination(
+        in directory: URL,
+        fileName: String,
+        exists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) -> URL {
+        let base = directory.appendingPathComponent(fileName)
+        guard exists(base) else { return base }
+        let stem = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        // ponytail: 99 is plenty for same-second saves; past it, overwrite as before.
+        for suffix in 2...99 {
+            let candidate = directory.appendingPathComponent("\(stem) \(suffix).\(ext)")
+            if !exists(candidate) { return candidate }
+        }
+        return base
+    }
+
     nonisolated static func fileName(appName: String, date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

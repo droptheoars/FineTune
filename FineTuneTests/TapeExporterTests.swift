@@ -643,4 +643,25 @@ struct TapeExporterNamingTests {
         #expect(TapeExporter.fileName(appName: "  ", date: date) == "FineTune \(stamp).wav")
         #expect(TapeExporter.fileName(appName: ".hidden", date: date) == "hidden \(stamp).wav")
     }
+
+    @Test("Two saves in the same second do not overwrite each other (T10/N7)")
+    func sameSecondSavesGetDistinctFiles() {
+        let directory = URL(fileURLWithPath: "/tmp/finetune-tests", isDirectory: true)
+        let name = "Spotify 2026-08-26 12.00.00.wav"
+        var taken: Set<String> = []
+        func next() -> String {
+            let url = TapeExporter.uniqueDestination(
+                in: directory,
+                fileName: name,
+                exists: { taken.contains($0.lastPathComponent) }
+            )
+            taken.insert(url.lastPathComponent)
+            return url.lastPathComponent
+        }
+
+        #expect(next() == name)
+        #expect(next() == "Spotify 2026-08-26 12.00.00 2.wav",
+                "the stamp is only accurate to the second, and write() replaces its destination")
+        #expect(next() == "Spotify 2026-08-26 12.00.00 3.wav")
+    }
 }
