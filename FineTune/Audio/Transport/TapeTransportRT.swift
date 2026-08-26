@@ -25,8 +25,21 @@ import Foundation
 //    memcpy/memset, vDSP_maxmgv, libm (sinf/cosf/exp-free — pure compute),
 //    aligned atomic loads/stores, OSMemoryBarrier. There is deliberately NO
 //    lock, not even a trylock: write clock and read position have exactly one
-//    writer (the primary callback); the crossfade-promotion overlap is bounded
-//    to one blended buffer and accepted (§2.3/E17).
+//    writer (the primary callback), except across a crossfade promotion, where
+//    the old primary's in-flight callback and the promoted one can both be
+//    inside writeAndRender once. That window is accepted (§2.3/E17), and the
+//    review traced it more precisely than "one blended buffer" (T10/I2):
+//      - the two writeToRing calls can advance `_writeFrames` twice with
+//        near-identical content — one duplicated ~10 ms span in the timeline;
+//      - `_readAbsQ`/`_readRingQ` are updated as a NON-ATOMIC PAIR, so racing
+//        read-modify-writes can leave them desynchronized by up to one buffer:
+//        a constant playback offset that persists until the next seek, LIVE or
+//        loop jump calls setPrimary (which re-derives ring from abs);
+//      - the fade counters for that one callback can tear.
+//    No memory unsafety in any of it: both positions stay clamped in range,
+//    interpolatedSample cannot read out of bounds, and the conditional ±capacity
+//    wrap survives a lost update. Bounded, rare, self-healing — accepted, but
+//    do not restate it as one blended buffer.
 //
 // **Write discipline (§2.3)**: memcpy samples into the ring FIRST, then
 // OSMemoryBarrier(), then advance `_writeFrames` — a concurrent exporter or UI
