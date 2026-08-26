@@ -1476,11 +1476,12 @@ struct TapeTransportCallbackScopeTests {
     @Test("silenceOutput zeroes the output and keeps the tape timeline advancing (E21)")
     func silenceOutputWritesSilence() {
         let tape = makeTape()
+        let input = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
         let output = TestABL(buffers: [(2, Self.frames), (2, Self.frames)])
         fill(output, bufferIndex: 0, value: Self.dry)
         fill(output, bufferIndex: 1, value: Self.dry)
 
-        ProcessTapController.silenceOutput(output.bufferList, transport: tape)
+        ProcessTapController.silenceOutput(output.bufferList, inputBuffers: input.bufferList, transport: tape)
 
         expectAllSamples(output, at: 0, equal: 0, "mute must silence the output")
         expectAllSamples(output, at: 1, equal: 0, "every mirrored buffer too")
@@ -1490,10 +1491,11 @@ struct TapeTransportCallbackScopeTests {
 
     @Test("silenceOutput with no transport still zeroes the output")
     func silenceOutputWithoutTape() {
+        let input = TestABL(buffers: [(2, Self.frames)])
         let output = TestABL(buffers: [(2, Self.frames)])
         fill(output, bufferIndex: 0, value: Self.dry)
 
-        ProcessTapController.silenceOutput(output.bufferList, transport: nil)
+        ProcessTapController.silenceOutput(output.bufferList, inputBuffers: input.bufferList, transport: nil)
 
         expectAllSamples(output, at: 0, equal: 0, "unchanged behaviour without a tape")
     }
@@ -1527,5 +1529,174 @@ struct TapeTransportCallbackScopeTests {
                 the gate would otherwise accumulate silence, re-arm and fade the tape's \
                 own recording to zero, and the meter would flatline (E19)
                 """)
+    }
+}
+
+// MARK: - Output gate vs. tape substitution (T10/C1)
+
+/// E19 fed the output gate the tape's output peak whenever the transport was playing
+/// the past. The gate multiplier is an input to the GAIN STAGE, which runs before
+/// `writeAndRender` copies the buffer into the ring — so a stopped tape (peak 0)
+/// re-armed the gate and the live audio the app was still playing went into the tape
+/// as SILENCE, permanently. This suite drives the callback's real stage order with the
+/// production helpers, so it fails the moment the gate is fed anything but live.
+@Suite("ProcessTapController — the output gate follows live input (C1)")
+struct OutputGateFollowsLiveInputTests {
+
+    private static let rate = 48_000.0
+    private static let capacity = 240_000          // 5 s
+    private static let frames = 512
+    private static let live: Float = 0.5           // loud, and below the limiter knee
+    private static let rampSamples: Float = 1920   // 40 ms @ 48 kHz
+    private static let silenceHold: Int32 = 9600   // 200 ms @ 48 kHz
+
+    /// Gate state carried across callbacks exactly as the controller carries it.
+    private struct Gate {
+        var phase: UInt8 = 2       // open, as it is while an app is playing
+        var progress: Float = 1
+        var silentSamples: Int32 = 0
+    }
+
+    /// One HAL callback in the controller's own order: measure the live peak, split it
+    /// into meter/gate peaks, advance the gate, then run the gain → EQ → transport chain.
+    @discardableResult
+    private func runCallback(
+        tape: TapeTransportRT,
+        gate: inout Gate,
+        livePeak: Float,
+        isMuted: Bool = false
+    ) -> Float {
+        let peaks = ProcessTapController.callbackPeaks(
+            livePeak: livePeak, isMuted: isMuted, transport: tape)
+        let multiplier = ProcessTapController.advanceOutputGate(
+            phase: &gate.phase,
+            progress: &gate.progress,
+            silentSamples: &gate.silentSamples,
+            maxPeak: peaks.gate,
+            frameCount: Self.frames,
+            rampSamples: Self.rampSamples,
+            silenceHoldSamples: Self.silenceHold
+        )
+        let input = TestABL(buffers: [(2, Self.frames)])
+        let output = TestABL(buffers: [(2, Self.frames)])
+        fill(input, bufferIndex: 0, value: livePeak)
+        var vol: Float = 1.0
+        processWithDefaults(
+            input: input,
+            output: output,
+            outputGateMultiplier: multiplier,
+            currentVol: &vol,
+            transport: tape
+        )
+        return multiplier
+    }
+
+    /// The last `frames` frames of tape, read back the way the exporter reads them.
+    private func lastRecordedFrames(_ tape: TapeTransportRT) -> [Float] {
+        let count = Self.frames * 2
+        let buffer = UnsafeMutablePointer<Float>.allocate(capacity: count)
+        defer { buffer.deallocate() }
+        buffer.update(repeating: .nan, count: count)
+        let ok = tape.copyRingWindow(
+            from: tape.writtenFrames - Int64(Self.frames),
+            frameCount: Self.frames,
+            into: buffer
+        )
+        #expect(ok, "the window just written must be readable")
+        return Array(UnsafeBufferPointer(start: buffer, count: count))
+    }
+
+    @Test("A stopped tape does not close the gate on live audio still being recorded")
+    func stoppedTapeDoesNotRecordSilenceOverLiveInput() {
+        let tape = TapeTransportRT(sampleRate: Self.rate, capacityFrames: Self.capacity)
+        var gate = Gate()
+
+        // Live audio for a while, then rewind and stop the tape — the user is holding
+        // a stopped tape while the app keeps playing.
+        for _ in 0..<8 { runCallback(tape: tape, gate: &gate, livePeak: Self.live) }
+        tape.requestSeek(toFrame: 2048)
+        tape.setTargetRate(0, rampSeconds: 0.001)
+
+        // Far longer than the 200 ms silence hold: with the tape peak feeding the gate,
+        // it re-arms here and every later callback records zeroes.
+        var lastMultiplier: Float = 1
+        for _ in 0..<60 {
+            lastMultiplier = runCallback(tape: tape, gate: &gate, livePeak: Self.live)
+        }
+
+        #expect(tape.diagnosticsSnapshot().isPinnedToLive == false, "the tape must be engaged")
+        #expect(lastMultiplier == 1.0,
+                "loud live input must hold the gate open no matter what the tape is doing")
+        let recorded = lastRecordedFrames(tape)
+        #expect(recorded.allSatisfy { abs($0 - Self.live) < 1e-6 },
+                """
+                the gain stage runs BEFORE the ring write, so a gate fed the stopped \
+                tape's peak records silence over audio the app is still playing (C1)
+                """)
+    }
+
+    @Test("Returning to LIVE from a stopped tape fades into live audio, not a zeroed buffer")
+    func liveReturnAfterStopIsNotSilent() {
+        let tape = TapeTransportRT(sampleRate: Self.rate, capacityFrames: Self.capacity)
+        var gate = Gate()
+
+        for _ in 0..<8 { runCallback(tape: tape, gate: &gate, livePeak: Self.live) }
+        tape.requestSeek(toFrame: 2048)
+        tape.setTargetRate(0, rampSeconds: 0.001)
+        for _ in 0..<60 { runCallback(tape: tape, gate: &gate, livePeak: Self.live) }
+
+        tape.setTargetRate(1)
+        tape.requestLive()
+
+        // The very first callback back at live is the one that bites: a gate the
+        // stopped tape armed hands the 50 ms crossfade a zeroed buffer to fade into,
+        // and the user then waits out the gate's attack ramp on top of it.
+        let firstMultiplier = runCallback(tape: tape, gate: &gate, livePeak: Self.live)
+        #expect(firstMultiplier == 1.0, "LIVE must return to audio, not to a gate ramp (C1)")
+
+        // Outlast the 50 ms live crossfade (≈ 5 callbacks).
+        for _ in 0..<10 { runCallback(tape: tape, gate: &gate, livePeak: Self.live) }
+        #expect(tape.diagnosticsSnapshot().isPinnedToLive, "LIVE must have landed")
+        let recorded = lastRecordedFrames(tape)
+        #expect(recorded.allSatisfy { abs($0 - Self.live) < 1e-6 },
+                "a gate closed by the stopped tape would fade LIVE into silence (C1)")
+    }
+
+    @Test("The meter keeps the tape substitution while the gate takes the live peak (E19)")
+    func meterAndGateAreSeparated() {
+        let tape = TapeTransportRT(sampleRate: Self.rate, capacityFrames: Self.capacity)
+        var gate = Gate()
+        for _ in 0..<8 { runCallback(tape: tape, gate: &gate, livePeak: Self.live) }
+        tape.requestSeek(toFrame: 2048)
+        for _ in 0..<3 { runCallback(tape: tape, gate: &gate, livePeak: 0) }
+
+        // The app has gone quiet while the tape plays loud recorded audio.
+        let peaks = ProcessTapController.callbackPeaks(livePeak: 0, isMuted: false, transport: tape)
+        #expect(peaks.meter > 0.4, "the meter must show what the user hears (E19)")
+        #expect(peaks.gate == 0, "the gate must follow the live input, which is silent (C1)")
+    }
+
+    @Test("Muted still feeds the gate synthetic silence so unmute fades in")
+    func mutedFeedsGateSilence() {
+        let tape = TapeTransportRT(sampleRate: Self.rate, capacityFrames: Self.capacity)
+        let peaks = ProcessTapController.callbackPeaks(
+            livePeak: Self.live, isMuted: true, transport: tape)
+        #expect(peaks.gate == 0)
+        #expect(peaks.meter == Self.live, "the meter is unaffected by mute (unchanged)")
+    }
+
+    @Test("A mono tap's timeline does not advance while muted (N2)")
+    func silenceOutputRespectsTheStereoGate() {
+        let tape = TapeTransportRT(sampleRate: Self.rate, capacityFrames: Self.capacity)
+        let input = TestABL(buffers: [(1, Self.frames)])
+        let output = TestABL(buffers: [(1, Self.frames)])
+        fill(output, bufferIndex: 0, value: Self.live)
+
+        ProcessTapController.silenceOutput(
+            output.bufferList, inputBuffers: input.bufferList, transport: tape)
+
+        expectAllSamples(output, at: 0, equal: 0, "mute must still silence the output")
+        #expect(tape.writtenFrames == 0,
+                "a tap the render path never records must not advance the ring while muted")
     }
 }

@@ -1578,37 +1578,83 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting, TapeTra
     /// would stop advancing and a rewind across the muted span would splice the two
     /// sides together. Writing silence instead keeps ring time == callback time.
     /// The transport is passed only in the primary role (E17), so this writes once.
+    ///
+    /// The silence write takes the SAME stereo gate and index mapping as the render
+    /// path (T10/N2): a tap `processMappedBuffers` never records must not have its
+    /// timeline advanced by mute either, or a non-stereo tap's ring would advance
+    /// only while muted.
     @inline(__always)
     nonisolated static func silenceOutput(
         _ outputBuffers: UnsafeMutableAudioBufferListPointer,
+        inputBuffers: UnsafeMutableAudioBufferListPointer,
         transport: TapeTransportRT?
     ) {
-        var frameCount = 0
-        for buf in outputBuffers {
-            guard let data = buf.mData else { continue }
-            let channels = max(1, Int(buf.mNumberChannels))
-            let frames = Int(buf.mDataByteSize) / MemoryLayout<Float>.size / channels
-            if frames > frameCount { frameCount = frames }
-            memset(data, 0, Int(buf.mDataByteSize))
+        let inputCount = inputBuffers.count
+        let outputCount = outputBuffers.count
+        var tapeFrames = 0
+        for outputIndex in 0..<outputCount {
+            let outputBuffer = outputBuffers[outputIndex]
+            guard let outputData = outputBuffer.mData else { continue }
+            let outputChannels = max(1, Int(outputBuffer.mNumberChannels))
+            let outputFrames = Int(outputBuffer.mDataByteSize) / MemoryLayout<Float>.size / outputChannels
+            memset(outputData, 0, Int(outputBuffer.mDataByteSize))
+
+            guard tapeFrames == 0, outputChannels == 2 else { continue }
+            let inputIndex = inputCount > outputCount
+                ? inputCount - outputCount + outputIndex
+                : outputIndex
+            guard inputIndex < inputCount else { continue }
+            let inputBuffer = inputBuffers[inputIndex]
+            guard inputBuffer.mData != nil, Int(inputBuffer.mNumberChannels) == 2 else { continue }
+            let inputFrames = Int(inputBuffer.mDataByteSize) / MemoryLayout<Float>.size / 2
+            tapeFrames = min(inputFrames, outputFrames)
         }
-        transport?.writeSilence(frameCount: frameCount)
+        if tapeFrames > 0 { transport?.writeSilence(frameCount: tapeFrames) }
     }
 
-    /// Peak the VU meter and the output gate should follow (E19). While the tape plays
-    /// the past, the live input is often dead silent — the meter would flatline and the
-    /// gate would accumulate silence, re-arm, and fade the recording to zero underneath
-    /// the playback. Substituting the tape's own output peak fixes both.
+    /// Peak the VU METER should follow (E19). While the tape plays the past the live
+    /// input is often dead silent, and a meter showing silence while the user hears the
+    /// tape is simply wrong — so the tape's own output peak is substituted.
     ///
     /// The transport renders later in this same callback, so the value read here is the
-    /// PREVIOUS callback's output — one buffer of lag, far under the meter's smoothing
-    /// and the gate's 200 ms silence hold, and the only RT-safe ordering available: the
-    /// gate multiplier is an input to the gain stage that runs before the ring write.
+    /// PREVIOUS callback's output — one buffer of lag, far under the meter's smoothing.
+    ///
+    /// The OUTPUT GATE deliberately does NOT use this; see `callbackPeaks`.
     @inline(__always)
     nonisolated static func audibleInputPeak(livePeak: Float, transport: TapeTransportRT?) -> Float {
         guard let transport else { return livePeak }
         let diagnostics = transport.diagnosticsSnapshot()
         guard !diagnostics.isPinnedToLive else { return livePeak }
         return min(diagnostics.lastOutputPeak, 1.0)
+    }
+
+    /// The two peaks one callback needs, kept apart on purpose.
+    ///
+    /// E19 fed both the meter and the output gate the tape substitution above. That is
+    /// backwards for the gate and destroys recordings (T10/C1): the gate multiplier is
+    /// an input to the GAIN STAGE, which runs *before* `writeAndRender` copies the buffer
+    /// into the ring. A stopped or braked tape has output peak 0, so the gate accumulates
+    /// silence, re-arms, and the gain stage then zeroes the LIVE input on its way into the
+    /// tape — everything the app played while the tape sat stopped is recorded as silence,
+    /// and the gate can only reopen on a non-silent TAPE peak, so it stays shut for the
+    /// whole span.
+    ///
+    /// The substitution also protects nothing: when the tape is engaged the transport
+    /// REPLACES the buffer after the gain stage, so the gate multiplier never reaches the
+    /// user's ears. The gate follows the live input, which is the only thing it still
+    /// governs — what enters the ring, and the live path itself.
+    @inline(__always)
+    nonisolated static func callbackPeaks(
+        livePeak: Float,
+        isMuted: Bool,
+        transport: TapeTransportRT?
+    ) -> (meter: Float, gate: Float) {
+        (
+            meter: audibleInputPeak(livePeak: livePeak, transport: transport),
+            // Muted feeds the gate synthetic silence so a long mute re-arms it and
+            // unmute fades in — unchanged behaviour, see the call site.
+            gate: isMuted ? 0 : livePeak
+        )
     }
 
     // MARK: - RT-Safe Audio Callback (DO NOT MODIFY WITHOUT RT-SAFETY REVIEW)
@@ -1663,7 +1709,7 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting, TapeTra
         // Force silence — primary only. During destructive device switch,
         // _forceSilence is set before the old IO proc is torn down.
         if isPrimary && _forceSilence {
-            Self.silenceOutput(outputBuffers, transport: transport)
+            Self.silenceOutput(outputBuffers, inputBuffers: inputBuffers, transport: transport)
             return
         }
 
@@ -1684,12 +1730,13 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting, TapeTra
             }
         }
         let rawPeak = min(maxPeak, 1.0)
-        // E19: the meter and the gate must follow what is audible, which is the tape's
-        // output whenever the transport is playing the past.
-        let audiblePeak = Self.audibleInputPeak(livePeak: rawPeak, transport: transport)
+        // E19 + C1: the METER follows what is audible (the tape's output while it plays
+        // the past); the GATE follows the LIVE input, because its multiplier is applied
+        // to what goes into the ring. See `callbackPeaks`.
+        let peaks = Self.callbackPeaks(livePeak: rawPeak, isMuted: _isMuted, transport: transport)
 
         if isPrimary {
-            _peakLevel = _peakLevel + levelSmoothingFactor * (audiblePeak - _peakLevel)
+            _peakLevel = _peakLevel + levelSmoothingFactor * (peaks.meter - _peakLevel)
         } else {
             _secondaryPeakLevel = _secondaryPeakLevel + levelSmoothingFactor * (rawPeak - _secondaryPeakLevel)
             // Only the secondary callback advances crossfade progress (single-writer pattern).
@@ -1703,12 +1750,11 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting, TapeTra
         // a fresh activate(initial:) and so resets gate state.
         let outputGateMultiplier: Float
         if isPrimary {
-            let gateInputPeak: Float = _isMuted ? 0.0 : audiblePeak
             outputGateMultiplier = Self.advanceOutputGate(
                 phase: &_outputGateRawPhase,
                 progress: &_outputGateProgress,
                 silentSamples: &_outputGateSilentSamples,
-                maxPeak: gateInputPeak,
+                maxPeak: peaks.gate,
                 frameCount: totalSamplesThisBuffer,
                 rampSamples: _outputGateRampSamples,
                 silenceHoldSamples: _outputGateSilenceHoldSamples
@@ -1719,7 +1765,7 @@ final class ProcessTapController: ProcessTapControlling, AUChainHosting, TapeTra
         }
 
         if _isMuted {
-            Self.silenceOutput(outputBuffers, transport: transport)
+            Self.silenceOutput(outputBuffers, inputBuffers: inputBuffers, transport: transport)
             return
         }
 
