@@ -191,22 +191,53 @@ private struct TapeSpeedSlider: View {
     let rate: Double
     let onChange: (Double) -> Void
 
+    /// Wins over `rate` while dragging, and for the brief window after
+    /// release until the level-poll timer's next tick republishes the panel
+    /// model (`AppRowWithLevelPolling`) with the rate we just committed.
+    /// Without this, the binding's `get` reads the stale polled `rate`
+    /// between ticks and the thumb fights the finger. Cleared once the
+    /// polled value catches up, so a stalled poll can't strand the slider
+    /// on a locally-held value forever.
+    @State private var dragFraction: Double?
+
     private var fractionBinding: Binding<Double> {
         Binding(
-            get: { TapeTransportMath.sliderFraction(forRate: rate) },
-            set: { onChange(TapeTransportMath.snappedRate(TapeTransportMath.rate(forSliderFraction: $0))) }
+            get: { dragFraction ?? TapeTransportMath.sliderFraction(forRate: rate) },
+            set: { newFraction in
+                dragFraction = newFraction
+                onChange(TapeTransportMath.rate(forSliderFraction: newFraction))
+            }
         )
     }
 
     var body: some View {
-        LiquidGlassSlider(value: fractionBinding, in: 0...1, showUnityMarker: false)
-            .overlay {
-                Rectangle()
-                    .fill(DesignTokens.Colors.tapeLiveTick)
-                    .frame(width: 1, height: 8)
-                    .allowsHitTesting(false)
+        LiquidGlassSlider(
+            value: fractionBinding,
+            in: 0...1,
+            showUnityMarker: false,
+            onEditingChanged: { editing in
+                // Detent applies on release only: snapping mid-drag made the
+                // user drag through a dead zone around 1.0x and then pop out
+                // of it. Letting go near 1.0x still lands exactly on it.
+                guard !editing, let dragFraction else { return }
+                let snapped = TapeTransportMath.snappedRate(TapeTransportMath.rate(forSliderFraction: dragFraction))
+                self.dragFraction = TapeTransportMath.sliderFraction(forRate: snapped)
+                onChange(snapped)
             }
-            .frame(width: DesignTokens.Dimensions.settingsSliderWidth)
+        )
+        .overlay {
+            Rectangle()
+                .fill(DesignTokens.Colors.tapeLiveTick)
+                .frame(width: 1, height: 8)
+                .allowsHitTesting(false)
+        }
+        .frame(width: DesignTokens.Dimensions.tapeSpeedSliderWidth)
+        .onChange(of: rate) { _, newRate in
+            guard let dragFraction else { return }
+            if abs(TapeTransportMath.sliderFraction(forRate: newRate) - dragFraction) < 0.001 {
+                self.dragFraction = nil
+            }
+        }
     }
 }
 

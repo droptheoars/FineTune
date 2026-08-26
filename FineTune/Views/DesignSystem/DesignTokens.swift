@@ -509,6 +509,11 @@ enum DesignTokens {
         /// Tape strip content height.
         static let tapeStripHeight: CGFloat = 22
 
+        /// Tape panel speed slider width — wider than the generic settings
+        /// slider so the requested-rate range (0.25x-2.0x) has more travel
+        /// per pixel, for finer control.
+        static let tapeSpeedSliderWidth: CGFloat = 260
+
     }
 
     // MARK: - Animation (smooth style - macOS-like springs)

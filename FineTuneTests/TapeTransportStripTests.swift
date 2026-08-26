@@ -218,4 +218,24 @@ struct TapeTransportGestureMathTests {
         #expect(TapeTransportMath.snappedRate(0.96) == 1.0)
         #expect(TapeTransportMath.snappedRate(1.10) == 1.10)
     }
+
+    @Test("Speed slider mapping round-trips at both ends of its range and exactly at 1.0x")
+    func speedSliderRoundTripsAtBoundaries() {
+        for rate in [0.25, 1.0, 2.0] {
+            let fraction = TapeTransportMath.sliderFraction(forRate: rate)
+            let roundTripped = TapeTransportMath.rate(forSliderFraction: fraction)
+            #expect(abs(roundTripped - rate) < 0.0001)
+        }
+        #expect(TapeTransportMath.sliderFraction(forRate: 0.25) == 0)
+        #expect(TapeTransportMath.sliderFraction(forRate: 2.0) == 1)
+    }
+
+    @Test("rate(forSliderFraction:) alone never applies the detent; only snappedRate does, which is what lets the Tape panel's slider report every intermediate drag value un-snapped and apply the detent once, on release")
+    func rateFromFractionIsNotAutoSnapped() {
+        let nearUnityFraction = TapeTransportMath.sliderFraction(forRate: 1.04)
+        let raw = TapeTransportMath.rate(forSliderFraction: nearUnityFraction)
+        #expect(abs(raw - 1.04) < 0.0001)
+        #expect(raw != 1.0)
+        #expect(TapeTransportMath.snappedRate(raw) == 1.0)
+    }
 }
