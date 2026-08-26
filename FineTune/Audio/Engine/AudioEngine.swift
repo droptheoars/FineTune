@@ -41,6 +41,12 @@ final class AudioEngine {
 
     /// Closure to check if a device is alive. Overridable for testing.
     private let isAliveCheck: (AudioDeviceID) -> Bool
+    /// Is the process still running? A stale tap on a LIVING process is a paused
+    /// app; on a dead one it is a quit app, and only the latter frees an armed
+    /// tape's ring (see `cleanupStaleTaps`). Injectable for tests.
+    private let isProcessAlive: (pid_t) -> Bool
+    /// Grace before a stale tap is torn down. Injectable so tests do not sleep 30 s.
+    private let staleCleanupDelay: Duration
 
     /// One-shot HAL listeners for devices that were present but not alive during priority resolution.
     /// Keyed by AudioDeviceID. Each entry holds the device UID, listener block, and a timeout task.
@@ -193,6 +199,8 @@ final class AudioEngine {
         deviceVolumeMonitor: (any DeviceVolumeProviding)? = nil,
         tapFactory: (@MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling)? = nil,
         isAlive: ((AudioDeviceID) -> Bool)? = nil,
+        isProcessAlive: ((pid_t) -> Bool)? = nil,
+        staleCleanupDelay: Duration = .seconds(30),
         startMonitorsAutomatically: Bool = true
     ) {
         self.permission = permission
@@ -204,6 +212,10 @@ final class AudioEngine {
         self.auChainManager = AUChainManager(settingsManager: manager)
         self.tapeTransportManager = TapeTransportManager(settingsManager: manager)
         self.isAliveCheck = isAlive ?? { $0.isDeviceAlive() }
+        // kill(pid, 0) probes existence without signalling; EPERM means alive but
+        // owned by someone else.
+        self.isProcessAlive = isProcessAlive ?? { kill($0, 0) == 0 || errno == EPERM }
+        self.staleCleanupDelay = staleCleanupDelay
 
         // If a custom deviceProvider is given, use it directly.
         // Otherwise create a real AudioDeviceMonitor (needed by DeviceVolumeMonitor and default tap factory).
@@ -429,8 +441,27 @@ final class AudioEngine {
     /// Combined list of active apps and pinned inactive apps for UI display.
     /// Pinned apps appear first (sorted alphabetically), then unpinned active apps (sorted alphabetically).
     var displayableApps: [DisplayableApp] {
-        let activeApps = apps
+        let runningApps = apps
             .filter { !appListCoordinator.isIgnored(identifier: $0.persistenceIdentifier) }
+        let runningIdentifiers = Set(runningApps.map { $0.persistenceIdentifier })
+
+        // An engaged tape is audio FineTune is playing right now, from a tap E20 keeps
+        // alive after the app went quiet — but LIVE, stop and scrub live on the app's
+        // row, and a quiet unpinned app leaves the list entirely. That is ghost audio
+        // the user cannot control (T10/I1), so an engaged app stays listed, and stays
+        // listed as ACTIVE because that is the presentation carrying the transport.
+        let engagedApps = Dictionary(
+            taps.values
+                .map(\.app)
+                .filter {
+                    !runningIdentifiers.contains($0.persistenceIdentifier)
+                        && !appListCoordinator.isIgnored(identifier: $0.persistenceIdentifier)
+                        && tapeTransportManager.isEngaged(identifier: $0.persistenceIdentifier)
+                }
+                .map { ($0.persistenceIdentifier, $0) },
+            uniquingKeysWith: { first, _ in first }
+        ).values
+        let activeApps = runningApps + engagedApps
         let activeIdentifiers = Set(activeApps.map { $0.persistenceIdentifier })
 
         // Get pinned apps that are not currently active
@@ -1951,7 +1982,7 @@ final class AudioEngine {
             guard !self.isTapeTransportEngaged(pid: pid) else { continue }
 
             pendingCleanup[pid] = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: self.staleCleanupDelay)
                 guard !Task.isCancelled else { return }
 
                 // Double-check still stale
@@ -1972,7 +2003,13 @@ final class AudioEngine {
                     // App left the list: capture state, close windows, release the AU
                     // instances — spec §2.6 / E10 — and free the tape ring (Phase 2 E29).
                     self.auChainManager.release(identifier: tap.app.persistenceIdentifier)
-                    self.tapeTransportManager.release(identifier: tap.app.persistenceIdentifier)
+                    // The ring outlives the tap: a paused app keeps its armed tape
+                    // (T10/C2), a quit one does not.
+                    if self.isProcessAlive(pid) {
+                        self.tapeTransportManager.releaseIfDisarmed(identifier: tap.app.persistenceIdentifier)
+                    } else {
+                        self.tapeTransportManager.release(identifier: tap.app.persistenceIdentifier)
+                    }
                     self.logger.debug("Cleaned up stale tap for PID \(pid)")
                 }
                 self.appDeviceRouting.removeValue(forKey: pid)

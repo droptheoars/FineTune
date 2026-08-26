@@ -65,6 +65,19 @@ final class TapeTransportManager {
         transports.removeValue(forKey: identifier)?.release()
     }
 
+    /// Stale-tap cleanup (Erik's ruling, 2026-08-26, superseding E29's wording).
+    /// A paused app is not a quit app: releasing an ARMED tape here means "pause
+    /// Spotify for 30 s, come back, retro-record is empty" — silent data loss on
+    /// the feature's headline flow. So the sweep frees the TAP and keeps the
+    /// transport and its ring for any armed tape, engaged or not; the timeline
+    /// simply freezes across the gap, as it already does for callback-dead gaps
+    /// (E21). Accepted cost: up to the configured ring size stays resident while
+    /// an armed app sits paused. The ring is freed only on quit, disarm, ignore.
+    func releaseIfDisarmed(identifier: String) {
+        guard let transport = transports[identifier], !transport.config.isEnabled else { return }
+        release(identifier: identifier)
+    }
+
     /// E20: an engaged (non-live) transport is the user actively listening to
     /// the past, so the engine must treat the app as audible in its idle/health
     /// logic — otherwise rewind playback dies the moment the app goes quiet,
