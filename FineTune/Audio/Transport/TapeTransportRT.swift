@@ -41,9 +41,13 @@ import Foundation
 //    wrap survives a lost update. Bounded, rare, self-healing — accepted, but
 //    do not restate it as one blended buffer.
 //
-// **Write discipline (§2.3)**: memcpy samples into the ring FIRST, then
-// OSMemoryBarrier(), then advance `_writeFrames` — a concurrent exporter or UI
-// reader never sees an index covering unwritten audio. Ring index is computed
+// **Write discipline (§2.3)**: publish `_writeReserved` (the span about to be
+// overwritten) FIRST, then memcpy samples into the ring, then OSMemoryBarrier(),
+// then advance `_writeFrames` — a concurrent exporter or UI reader never sees an
+// index covering unwritten audio, and never mistakes an in-flight overwrite for
+// intact history (the clock lags the destruction; the reservation leads it).
+// Both indices are needed: one bounds what is READABLE, the other what is
+// already GONE. Ring index is computed
 // once per callback (`writeFrames % capacityFrames`); writes split at the
 // physical wrap into at most two block copies — no per-frame modulo (E31).
 //
@@ -182,6 +186,11 @@ final class TapeTransportRT: @unchecked Sendable {
 
     /// Monotonic frames written since creation — the write clock.
     private nonisolated(unsafe) var _writeFrames: Int64 = 0
+    /// Frames the in-flight callback is about to overwrite, published BEFORE a
+    /// sample lands (§2.3). Runs one callback ahead of `_writeFrames` for the
+    /// duration of a write; equal to it at rest. Read only by
+    /// `copyRingWindow`'s post-copy re-check.
+    private nonisolated(unsafe) var _writeReserved: Int64 = 0
     private nonisolated(unsafe) var _pinnedToLive: UInt8 = 1
     private nonisolated(unsafe) var _currentRate: Float = 1.0
     /// Absolute read position, Q40.24 — window math.
@@ -343,9 +352,11 @@ final class TapeTransportRT: @unchecked Sendable {
     ///
     /// Any non-RT thread. Lock-free by construction and therefore invisible to
     /// the RT thread: it never blocks the writer, only itself. Mirror image of
-    /// the write discipline in `writeToRing` — the writer publishes samples
+    /// the write discipline in `writeToRing`: the writer publishes samples
     /// before the index, so every frame below the loaded `_writeFrames` is
-    /// fully written; the second load catches a writer that lapped us mid-copy.
+    /// fully written; and it reserves the span it is about to overwrite before
+    /// touching it, so the second load — of `_writeReserved` — catches a writer
+    /// that lapped us mid-copy even while its own write is still in flight.
     func copyRingWindow(
         from startFrame: Int64,
         frameCount: Int,
@@ -371,7 +382,11 @@ final class TapeTransportRT: @unchecked Sendable {
         OSMemoryBarrier()
         // The writer advances while we copy; if it reached into this span the
         // copy is torn and the chunk is dropped from the export's head.
-        return startFrame >= _writeFrames - Int64(capacityFrames)
+        // Re-checked against the RESERVATION, not the write clock: the clock
+        // lags the frames the in-flight callback has already overwritten by up
+        // to one callback, and checking it accepts torn copies of the last
+        // callback's worth of frames above the trailing edge.
+        return startFrame >= _writeReserved - Int64(capacityFrames)
     }
 
     // MARK: - RT entry points (HAL I/O thread, primary callback ONLY)
@@ -432,6 +447,15 @@ final class TapeTransportRT: @unchecked Sendable {
             sourceOffset = frames - capacityFrames
             frames = capacityFrames
         }
+        // Claim the span BEFORE overwriting it. `_writeFrames` alone cannot
+        // tell a reader what has already been destroyed: samples are published
+        // before the index, so between the memcpy and the store below the ring
+        // already holds new audio while the clock still reports the old head.
+        // A reader re-checking against the clock accepts that torn span (E24).
+        // max(): during a crossfade promotion two callbacks can be in here at
+        // once (see the header) — the reservation must never move backwards.
+        _writeReserved = max(_writeReserved, writeFrames &+ Int64(frameCount))
+        OSMemoryBarrier()
         let startIndex = Int((writeFrames &+ Int64(sourceOffset)) % Int64(capacityFrames))
         let firstRegion = min(frames, capacityFrames - startIndex)
         if let source {
