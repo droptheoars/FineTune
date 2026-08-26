@@ -94,6 +94,47 @@ enum MenuBarPopupSize: String, Codable, CaseIterable, Identifiable, CustomString
     }
 }
 
+// MARK: - Tape Save Length
+
+/// Global (not per-app) preference for how much of a tape a save captures.
+/// Independent of ring length (`TapeTransportConfig.ringMinutes`): the ring is
+/// how much the app remembers, this is how much a save habitually keeps.
+enum TapeSaveLength: String, Codable, CaseIterable, Identifiable, CustomStringConvertible {
+    case seconds30
+    case oneMinute
+    case twoMinutes
+    case fiveMinutes
+    case fifteenMinutes
+    case wholeTape
+
+    var id: String { rawValue }
+
+    /// Minutes to request from `AppTapeTransport.export(lastMinutes:)`.
+    /// `nil` for `.wholeTape` — the caller substitutes the ring's own length,
+    /// which `export` then clamps to what is actually recorded either way.
+    var minutes: Double? {
+        switch self {
+        case .seconds30: return 30.0 / 60.0
+        case .oneMinute: return 1
+        case .twoMinutes: return 2
+        case .fiveMinutes: return 5
+        case .fifteenMinutes: return 15
+        case .wholeTape: return nil
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .seconds30: return "30 seconds"
+        case .oneMinute: return "1 minute"
+        case .twoMinutes: return "2 minutes"
+        case .fiveMinutes: return "5 minutes"
+        case .fifteenMinutes: return "15 minutes"
+        case .wholeTape: return "Whole tape"
+        }
+    }
+}
+
 struct PopupDimensions: Equatable {
     let width: CGFloat
     let contentPadding: CGFloat

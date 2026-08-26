@@ -115,11 +115,15 @@ extension MenuBarPopupView {
         // The edge is pushed on every drag change, so the release has nothing
         // left to commit.
         model.onLoopEdgeDragEnd = {}
-        // Length is read from the transport at click time, not captured from the
-        // model-build snapshot: the two are up to one 30 Hz tick apart (T10/N5).
+        // Length is read from the transport (and the save-length setting) at
+        // click time, not captured from the model-build snapshot: the two are
+        // up to one 30 Hz tick apart (T10/N5), and the setting can change
+        // between builds too.
         model.onExport = {
             let transport = edit()
-            _ = transport.export(lastMinutes: Double(transport.config.ringMinutes))
+            let saveLength = engine.settingsManager.appSettings.tapeSaveLength
+            let minutes = saveLength.minutes ?? Double(transport.config.ringMinutes)
+            _ = transport.export(lastMinutes: minutes)
         }
         model.onPreservePitchToggle = { edit().setPreservePitch($0) }
         return model

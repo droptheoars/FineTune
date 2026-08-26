@@ -27,6 +27,7 @@ struct AudioTab: View {
             VStack(alignment: .leading, spacing: 24) {
                 volumeSection
                 devicesSection
+                tapeSection
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 20)
@@ -133,7 +134,53 @@ struct AudioTab: View {
         }
     }
 
+    // MARK: - Tape
+
+    private var tapeSection: some View {
+        SettingsSection("Tape") {
+            SettingsRow(
+                "Save Length",
+                description: "How much of the tape a save captures. Clamps to what's currently recorded."
+            ) {
+                TapeSaveLengthPicker(selection: $settings.appSettings.tapeSaveLength)
+            }
+        }
+    }
+
     private func updateSortedDevices() {
         sortedOutputDevices = audioEngine.prioritySortedOutputDevices
+    }
+}
+
+/// Menu-with-chevron picker for `TapeSaveLength`, matching the Tape panel's
+/// own tape-length control (`TapeTransportPanelView.lengthRow`) rather than
+/// a new picker style — the user already associates that shape with "pick a
+/// tape duration".
+private struct TapeSaveLengthPicker: View {
+    @Binding var selection: TapeSaveLength
+
+    var body: some View {
+        Menu {
+            ForEach(TapeSaveLength.allCases) { length in
+                Button(length.description) { selection = length }
+            }
+        } label: {
+            HStack(spacing: DesignTokens.Spacing.xxs) {
+                Text(selection.description)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(DesignTokens.Colors.textTertiary)
+            }
+            .font(DesignTokens.Typography.pickerText)
+            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .padding(.vertical, 3)
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
+                    .strokeBorder(DesignTokens.Colors.menuBorder, lineWidth: 1)
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
     }
 }

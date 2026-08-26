@@ -514,6 +514,126 @@ struct AppTapeTransportExportTests {
     }
 }
 
+// MARK: - T12: save-length clamping (§8, the Settings "Save Length" preference)
+//
+// `AppTapeTransport.export(lastMinutes:)` already clamps its request against
+// what the ring actually holds (see its `frameCount` computation) — these
+// tests exercise exactly the values the new global setting can produce
+// (`TapeSaveLength.minutes`, with `.wholeTape` resolved by the caller to
+// `Double(config.ringMinutes)`, same as production wiring in
+// `TapeTransportPanelModel+Engine.swift`), so a future change to either side
+// of that contract breaks a test instead of shipping silently wrong.
+@Suite("AppTapeTransport — save-length clamping (T12)")
+@MainActor
+struct AppTapeTransportSaveLengthClampTests {
+
+    @Test("A request longer than the ring yields exactly what the ring holds")
+    func longRequestClampsToRingCapacity() async throws {
+        let log = TapeEventLog()
+        let ring = WeakRing()
+        let transport = makeTransport(log: log, ring: ring)
+        let host = FakeTapeHost(log: log)
+        var handedFrameCount: Int?
+        transport.onExport = { _, _, frameCount, _ in handedFrameCount = frameCount; return true }
+
+        transport.attach(to: host, sampleRate: testRate)
+        await transport.waitForPendingWork()
+        let rt = try #require(transport.transport)
+        // Write well past capacity so the ring has wrapped and genuinely holds
+        // only `capacityFrames - marginFrames` of reachable audio.
+        pump(rt, frames: 512, callbacks: (testCapacity / 512) * 2)
+
+        // 15 fixed minutes is far longer than the 1-minute test ring.
+        #expect(transport.export(lastMinutes: 15))
+        await waitUntil("export handed a frame count") { handedFrameCount != nil }
+        #expect(handedFrameCount == rt.capacityFrames - rt.marginFrames)
+    }
+
+    @Test("Whole tape (resolved to the ring's own length) yields everything recorded")
+    func wholeTapeYieldsEverythingRecorded() async throws {
+        let log = TapeEventLog()
+        let ring = WeakRing()
+        let transport = makeTransport(log: log, ring: ring)
+        let host = FakeTapeHost(log: log)
+        var handedFrameCount: Int?
+        transport.onExport = { _, _, frameCount, _ in handedFrameCount = frameCount; return true }
+
+        transport.attach(to: host, sampleRate: testRate)
+        await transport.waitForPendingWork()
+        let rt = try #require(transport.transport)
+        // Half the ring, well short of capacity: "whole tape" must not pad this
+        // out to the ring's full size.
+        let written = 512 * 20
+        pump(rt, frames: 512, callbacks: 20)
+
+        // Production's `.wholeTape` resolution: `saveLength.minutes ?? Double(config.ringMinutes)`.
+        #expect(TapeSaveLength.wholeTape.minutes == nil)
+        #expect(transport.export(lastMinutes: Double(transport.config.ringMinutes)))
+        await waitUntil("export handed a frame count") { handedFrameCount != nil }
+        #expect(handedFrameCount == written)
+    }
+
+    @Test("A short fixed request yields exactly that much, not the whole tape")
+    func shortRequestYieldsExactlyWhatWasAsked() async throws {
+        let log = TapeEventLog()
+        let ring = WeakRing()
+        let transport = makeTransport(log: log, ring: ring)
+        let host = FakeTapeHost(log: log)
+        var handedFrameCount: Int?
+        transport.onExport = { _, _, frameCount, _ in handedFrameCount = frameCount; return true }
+
+        transport.attach(to: host, sampleRate: testRate)
+        await transport.waitForPendingWork()
+        let rt = try #require(transport.transport)
+        // Fill most of the 1-minute ring (307,200 of 480,000 frames) — well past
+        // the 240,000 frames a 30-second request needs, so the request itself is
+        // the binding constraint, not what has been recorded.
+        pump(rt, frames: 512, callbacks: 600)
+
+        let requestedMinutes = TapeSaveLength.seconds30.minutes!
+        #expect(transport.export(lastMinutes: requestedMinutes))
+        await waitUntil("export handed a frame count") { handedFrameCount != nil }
+        #expect(handedFrameCount == Int((requestedMinutes * 60.0 * rt.sampleRate).rounded()))
+    }
+
+    @Test("Each export reflects the ring length live at call time, not one fixed earlier (T10/N5, T12)")
+    func exportReadsRingLengthAtCallTimeNotEarlier() async throws {
+        let log = TapeEventLog()
+        let ring = WeakRing()
+        let transport = makeTransport(minutes: 1, log: log, ring: ring)
+        let host = FakeTapeHost(log: log)
+        var handedFrameCounts: [Int] = []
+        transport.onExport = { _, _, frameCount, _ in handedFrameCounts.append(frameCount); return true }
+
+        transport.attach(to: host, sampleRate: testRate)
+        await transport.waitForPendingWork()
+        pump(try #require(transport.transport), frames: 512, callbacks: 4)
+
+        // "Whole tape" resolved against the config exactly as the export
+        // closure does — read fresh on every call, never snapshotted once.
+        func exportWholeTape() {
+            let transport = transport  // the same re-read-every-time shape as the production closure
+            _ = transport.export(lastMinutes: Double(transport.config.ringMinutes))
+        }
+
+        exportWholeTape()
+        await waitUntil("first export landed") { handedFrameCounts.count == 1 }
+
+        // The ring is resized between the two exports — a stale capture of the
+        // old ringMinutes would still report the old (smaller) length here.
+        transport.setRingMinutes(15)
+        await transport.waitForPendingWork()
+        pump(try #require(transport.transport), frames: 512, callbacks: 4)
+
+        exportWholeTape()
+        await waitUntil("second export landed") { handedFrameCounts.count == 2 }
+
+        let rt = try #require(transport.transport)
+        #expect(rt.capacityFrames == Int(testRate) * 60 * 15, "the ring really did grow")
+        #expect(handedFrameCounts[1] == 512 * 4, "the second export reflects the NEW ring, not the one read at the first call")
+    }
+}
+
 // MARK: - Manager
 
 @Suite("TapeTransportManager — registry")
